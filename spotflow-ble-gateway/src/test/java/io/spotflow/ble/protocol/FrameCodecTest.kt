@@ -1,0 +1,248 @@
+package io.spotflow.ble.protocol
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.random.Random
+
+class FrameCodecTest {
+
+    /** Feeds every frame through a fresh reassembler and returns the single completed message. */
+    private fun roundTrip(type: MessageType, payload: ByteArray, seq: Int, mtu: Int): Message {
+        val frames = FrameCodec.fragment(type, payload, seq, mtu)
+        val reassembler = FrameCodec.Reassembler()
+        var result: Message? = null
+        for ((index, frame) in frames.withIndex()) {
+            val out = reassembler.onFragment(frame)
+            if (index < frames.lastIndex) {
+                assertNull("message completed early at fragment $index", out)
+            } else {
+                result = out
+            }
+        }
+        return requireNotNull(result) { "message did not reassemble" }
+    }
+
+    @Test
+    fun `single fragment round trip`() {
+        val payload = "hello".toByteArray()
+        val msg = roundTrip(MessageType.TELEMETRY, payload, seq = 7, mtu = 247)
+        assertEquals(MessageType.TELEMETRY, msg.type)
+        assertArrayEquals(payload, msg.payload)
+    }
+
+    @Test
+    fun `fits in one frame at minimum mtu produces exactly one frame`() {
+        // At MTU 23: att payload = 20, first-fragment capacity = 15.
+        val payload = ByteArray(15) { it.toByte() }
+        val frames = FrameCodec.fragment(MessageType.TELEMETRY, payload, seq = 0, mtu = 23)
+        assertEquals(1, frames.size)
+        val flags = frames[0][1].toInt() and 0xFF
+        assertTrue(flags and FrameCodec.FLAG_IS_FIRST != 0)
+        assertTrue(flags and FrameCodec.FLAG_IS_LAST != 0)
+    }
+
+    @Test
+    fun `multi fragment round trip at minimum mtu`() {
+        val payload = Random(42).nextBytes(500)
+        val frames = FrameCodec.fragment(MessageType.REPORTED_CONFIGURATION, payload, seq = 3, mtu = 23)
+        assertTrue("expected many fragments, got ${frames.size}", frames.size > 20)
+        val msg = roundTrip(MessageType.REPORTED_CONFIGURATION, payload, seq = 3, mtu = 23)
+        assertArrayEquals(payload, msg.payload)
+    }
+
+    @Test
+    fun `first and last flags land on the right fragments`() {
+        val payload = Random(1).nextBytes(200)
+        val frames = FrameCodec.fragment(MessageType.TELEMETRY, payload, seq = 1, mtu = 40)
+        frames.forEachIndexed { i, f ->
+            val flags = f[1].toInt() and 0xFF
+            assertEquals("IS_FIRST on fragment $i", i == 0, flags and FrameCodec.FLAG_IS_FIRST != 0)
+            assertEquals("IS_LAST on fragment $i", i == frames.lastIndex, flags and FrameCodec.FLAG_IS_LAST != 0)
+            assertEquals("seq on fragment $i", 1, f[2].toInt() and 0xFF)
+        }
+    }
+
+    @Test
+    fun `empty payload produces one first-and-last frame`() {
+        val frames = FrameCodec.fragment(MessageType.DESIRED_CONFIGURATION, ByteArray(0), seq = 9, mtu = 100)
+        assertEquals(1, frames.size)
+        val msg = roundTrip(MessageType.DESIRED_CONFIGURATION, ByteArray(0), seq = 9, mtu = 100)
+        assertEquals(0, msg.payload.size)
+    }
+
+    @Test
+    fun `first fragment declares correct total length little endian`() {
+        val payload = ByteArray(0x0102) // 258 bytes
+        val frames = FrameCodec.fragment(MessageType.TELEMETRY, payload, seq = 0, mtu = 100)
+        assertEquals(0x02, frames[0][3].toInt() and 0xFF) // low byte
+        assertEquals(0x01, frames[0][4].toInt() and 0xFF) // high byte
+    }
+
+    @Test
+    fun `max length message round trips`() {
+        val payload = Random(9).nextBytes(FrameCodec.MAX_MESSAGE_LENGTH)
+        val msg = roundTrip(MessageType.TELEMETRY, payload, seq = 255, mtu = 517)
+        assertArrayEquals(payload, msg.payload)
+    }
+
+    @Test
+    fun `continuation without first fragment is dropped`() {
+        val reassembler = FrameCodec.Reassembler()
+        val orphan = byteArrayOf(MessageType.TELEMETRY.value.toByte(), 0x00, 0x05, 1, 2, 3)
+        assertNull(reassembler.onFragment(orphan))
+    }
+
+    @Test
+    fun `unknown message type is dropped on completion`() {
+        val reassembler = FrameCodec.Reassembler()
+        val flags = (FrameCodec.FLAG_IS_FIRST or FrameCodec.FLAG_IS_LAST).toByte()
+        val frame = byteArrayOf(0x7F, flags, 0x00, 0x01, 0x00, 42)
+        assertNull(reassembler.onFragment(frame))
+    }
+
+    @Test
+    fun `types the reassembler does not accept are dropped from their first fragment`() {
+        val reassembler = FrameCodec.Reassembler { it == MessageType.TELEMETRY || it == MessageType.REPORTED_CONFIGURATION }
+        val ota = FrameCodec.fragment(MessageType.OTA_D2C, Random(5).nextBytes(60), seq = 1, mtu = 30)
+        val artifact = FrameCodec.fragment(MessageType.ARTIFACT_REQUEST, Random(6).nextBytes(20), seq = 1, mtu = 30)
+        (ota + artifact).forEach { assertNull(reassembler.onFragment(it)) }
+
+        val payload = Random(7).nextBytes(60)
+        val telemetry = FrameCodec.fragment(MessageType.TELEMETRY, payload, seq = 1, mtu = 30)
+        val out = telemetry.map { reassembler.onFragment(it) }.last()
+        assertArrayEquals(payload, out?.payload)
+    }
+
+    @Test
+    fun `ACK and NACK control frames are ignored`() {
+        val reassembler = FrameCodec.Reassembler()
+        // type, acknowledged type (OTA_C2D), acknowledged seq: byte 1 must not be taken for flags.
+        assertNull(reassembler.onFragment(byteArrayOf(0x00, 0x06, 0x03)))
+        assertNull(reassembler.onFragment(byteArrayOf(0x01, 0x06, 0x03)))
+        assertNull(reassembler.onFragment(byteArrayOf(0x00, 0x03, 0x03, 0x01, 0x00, 0x2A)))
+    }
+
+    @Test
+    fun `a message whose fragments disagree on NEEDS_ACK is dropped`() {
+        val reassembler = FrameCodec.Reassembler()
+        val t = MessageType.TELEMETRY.value.toByte()
+        val first = (FrameCodec.FLAG_IS_FIRST or FrameCodec.FLAG_NEEDS_ACK).toByte()
+        assertNull(reassembler.onFragment(byteArrayOf(t, first, 4, 4, 0, 1, 2)))
+        assertNull(reassembler.onFragment(byteArrayOf(t, FrameCodec.FLAG_IS_LAST.toByte(), 4, 3, 4)))
+    }
+
+    @Test
+    fun `NEEDS_ACK set consistently and reserved flag bits do not affect reassembly`() {
+        val reassembler = FrameCodec.Reassembler()
+        val t = MessageType.TELEMETRY.value.toByte()
+        val reserved = 0xF8
+        val first = (FrameCodec.FLAG_IS_FIRST or FrameCodec.FLAG_NEEDS_ACK or reserved).toByte()
+        val last = (FrameCodec.FLAG_IS_LAST or FrameCodec.FLAG_NEEDS_ACK).toByte()
+        assertNull(reassembler.onFragment(byteArrayOf(t, first, 4, 4, 0, 1, 2)))
+        assertEquals(
+            Message(MessageType.TELEMETRY, byteArrayOf(1, 2, 3, 4)),
+            reassembler.onFragment(byteArrayOf(t, last, 4, 3, 4)),
+        )
+    }
+
+    @Test
+    fun `too short frame is dropped`() {
+        val reassembler = FrameCodec.Reassembler()
+        assertNull(reassembler.onFragment(byteArrayOf(0x02, 0x01)))
+    }
+
+    @Test
+    fun `interleaved messages with different seq reassemble independently`() {
+        val reassembler = FrameCodec.Reassembler()
+        val a = Random(1).nextBytes(120)
+        val b = Random(2).nextBytes(90)
+        val framesA = FrameCodec.fragment(MessageType.TELEMETRY, a, seq = 10, mtu = 40)
+        val framesB = FrameCodec.fragment(MessageType.TELEMETRY, b, seq = 11, mtu = 40)
+
+        val completed = mutableListOf<Message>()
+        // Interleave: one from A, one from B, repeatedly.
+        val max = maxOf(framesA.size, framesB.size)
+        for (i in 0 until max) {
+            framesA.getOrNull(i)?.let { reassembler.onFragment(it)?.let(completed::add) }
+            framesB.getOrNull(i)?.let { reassembler.onFragment(it)?.let(completed::add) }
+        }
+        assertEquals(2, completed.size)
+        assertTrue(completed.any { it.payload.contentEquals(a) })
+        assertTrue(completed.any { it.payload.contentEquals(b) })
+    }
+
+    @Test
+    fun `lost middle fragment drops the message instead of truncating it`() {
+        val payload = Random(1).nextBytes(200)
+        val frames = FrameCodec.fragment(MessageType.TELEMETRY, payload, seq = 1, mtu = 40)
+        val reassembler = FrameCodec.Reassembler()
+        frames.forEachIndexed { i, f ->
+            if (i != 2) assertNull(reassembler.onFragment(f))
+        }
+    }
+
+    @Test
+    fun `fragments beyond the declared length are dropped`() {
+        val reassembler = FrameCodec.Reassembler()
+        val first = byteArrayOf(MessageType.TELEMETRY.value.toByte(), FrameCodec.FLAG_IS_FIRST.toByte(), 1, 4, 0, 1, 2)
+        val overrun = byteArrayOf(MessageType.TELEMETRY.value.toByte(), 0, 1, 3, 4, 5, 6)
+        val last = byteArrayOf(MessageType.TELEMETRY.value.toByte(), FrameCodec.FLAG_IS_LAST.toByte(), 1, 3)
+        assertNull(reassembler.onFragment(first))
+        assertNull(reassembler.onFragment(overrun)) // 2 + 4 > 4 declared: the message is discarded
+        assertNull(reassembler.onFragment(last)) // nothing left to complete
+    }
+
+    @Test
+    fun `in-flight partials are capped`() {
+        val reassembler = FrameCodec.Reassembler()
+        val firsts = (0 until 20).map { seq ->
+            FrameCodec.fragment(MessageType.TELEMETRY, ByteArray(100) { seq.toByte() }, seq = seq, mtu = 40)
+        }
+        firsts.forEach { reassembler.onFragment(it.first()) }
+        // The newest partial still completes; the oldest was evicted.
+        val newest = firsts.last()
+        var out: Message? = null
+        newest.drop(1).forEach { out = reassembler.onFragment(it) ?: out }
+        assertEquals(100, out?.payload?.size)
+        val oldest = firsts.first()
+        oldest.drop(1).forEach { assertNull(reassembler.onFragment(it)) }
+    }
+
+    @Test
+    fun `reset drops in-flight partials`() {
+        val reassembler = FrameCodec.Reassembler()
+        val frames = FrameCodec.fragment(MessageType.TELEMETRY, Random(3).nextBytes(200), seq = 4, mtu = 30)
+        reassembler.onFragment(frames.first())
+        reassembler.reset()
+        // Feeding the remaining continuations now has no first fragment to attach to.
+        for (i in 1 until frames.size) {
+            assertNull(reassembler.onFragment(frames[i]))
+        }
+    }
+
+    @Test
+    fun `needsAck sets NEEDS_ACK in every fragment, and only it`() {
+        val frames = FrameCodec.fragment(MessageType.OTA_C2D, Random(8).nextBytes(100), seq = 9, mtu = 30, needsAck = true)
+        assertTrue(frames.size > 2)
+        frames.forEach { assertEquals(FrameCodec.FLAG_NEEDS_ACK, it[1].toInt() and FrameCodec.FLAG_NEEDS_ACK) }
+        FrameCodec.fragment(MessageType.DESIRED_CONFIGURATION, Random(8).nextBytes(100), seq = 9, mtu = 30)
+            .forEach { assertEquals(0, it[1].toInt() and FrameCodec.FLAG_NEEDS_ACK) }
+    }
+
+    @Test
+    fun `the gateway reassembles what devices send, OTA included, and nothing it sends itself`() {
+        val reassembler = FrameCodec.Reassembler { it.isFromDevice }
+        for (type in listOf(MessageType.OTA_D2C, MessageType.ARTIFACT_REQUEST, MessageType.TELEMETRY)) {
+            val payload = Random(type.value).nextBytes(50)
+            val out = FrameCodec.fragment(type, payload, seq = 2, mtu = 30).map { reassembler.onFragment(it) }.last()
+            assertEquals(type, out?.type)
+            assertArrayEquals(payload, out?.payload)
+        }
+        for (type in listOf(MessageType.OTA_C2D, MessageType.ARTIFACT_RESPONSE, MessageType.DESIRED_CONFIGURATION)) {
+            FrameCodec.fragment(type, Random(1).nextBytes(50), seq = 2, mtu = 30).forEach { assertNull(reassembler.onFragment(it)) }
+        }
+    }
+}

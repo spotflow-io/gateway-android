@@ -1,0 +1,21 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/*/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Loose design source (the launcher asset lives in app/src/main/res)
+/spotflow-icon-black-512px.png
+
+# Built/exported APKs
+*.apk
+
+# Signing keys never belong in the repo (CI decodes one from secrets)
+*.keystore
+*.jks
