@@ -9,11 +9,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
-import io.spotflow.ble.DeviceFilter
-import io.spotflow.ble.SpotflowGateway
-import io.spotflow.ble.cloud.MqttConfig
+import io.spotflow.ble.GatewayOptions
 import io.spotflow.ble.cloud.StaticIngestKey
-import io.spotflow.ble.service.SpotflowGatewayService
+import io.spotflow.ble.managed.DeviceFilter
+import io.spotflow.ble.managed.ManagedGateway
+import io.spotflow.ble.managed.SpotflowGatewayService
 
 /**
  * Re-installs the gateway service hooks whenever the process starts. If Android kills the process while
@@ -37,13 +37,14 @@ fun configureGatewayService(store: IngestKeyStore): Boolean {
     if (store.ingestKey.isNullOrBlank()) return false
     SpotflowGatewayService.gatewayFactory = { ctx ->
         val key = store.ingestKey.orEmpty()
-        val ramBytes = store.bufferRamMb.toLong() * 1024L * 1024L
-        val flashBytes = store.bufferFlashMb.toLong() * 1024L * 1024L
-        val config = MqttConfig(bufferMaxBytes = ramBytes + flashBytes, ramBufferMaxBytes = ramBytes)
+        val options = GatewayOptions {
+            ramBufferBytes = store.bufferRamMb.toLong() * 1024L * 1024L
+            flashBufferBytes = store.bufferFlashMb.toLong() * 1024L * 1024L
+        }
         store.appliedSettingsVersion = store.settingsVersion
         // A demo relays whatever is in range. An app for real devices passes a filter that accepts only
         // its own (see DeviceFilter): the BLE protocol does not authenticate devices.
-        SpotflowGateway(ctx, StaticIngestKey(key), DeviceFilter.AcceptAll, config)
+        ManagedGateway(ctx, StaticIngestKey(key), DeviceFilter.AcceptAll, options)
     }
     SpotflowGatewayService.onReady = { gateway ->
         try {

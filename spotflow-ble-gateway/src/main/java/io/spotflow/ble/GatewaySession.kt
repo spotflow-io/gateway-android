@@ -1,6 +1,9 @@
 package io.spotflow.ble
 
-import io.spotflow.ble.cloud.MqttConfig
+import android.bluetooth.BluetoothGatt
+import io.spotflow.ble.cloud.DeviceIngestCredential
+import io.spotflow.ble.cloud.SpotflowTopics
+import io.spotflow.ble.diagnostics.DeviceDiagnostics
 import io.spotflow.ble.ota.ArtifactCache
 import io.spotflow.ble.ota.ArtifactServer
 import io.spotflow.ble.protocol.DeviceCapabilities
@@ -13,13 +16,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.withContext
+import java.io.IOException
 
 /**
  * Bridges a single [BleConnection] to the device's [CloudLink].
@@ -31,33 +33,18 @@ import kotlinx.coroutines.withContext
  */
 internal class GatewaySession(
     private val connection: BleConnection,
-    private val mqttConfig: MqttConfig,
     private val links: CloudLinkRegistry,
-    /**
-     * Applies updates to this device's single status entry, shared with its [CloudLink] — so the buffer
-     * and cloud state the link reports carry over across BLE reconnects instead of being reset.
-     */
-    private val status: StatusPush,
-    private val deviceFilter: DeviceFilter = DeviceFilter.AcceptAll,
-    /**
-     * Whether anyone is looking at the signal strength right now; RSSI is read periodically while it is
-     * true. `null` never reads it — for attached connections, whose GATT queue belongs to the host.
-     */
-    private val rssiWanted: Flow<Boolean>? = null,
+    private val attachment: Attachment,
+    private val diagnostics: DeviceDiagnostics,
     /** Where OTA artifacts are downloaded to; null when the gateway's OTA is off. */
     private val artifacts: ArtifactCache? = null,
+    /** The ID already read and accepted by managed discovery, on this very connection. */
+    private val selectedDeviceId: String? = null,
+    /** Null when credentials are supplied by the gateway. */
+    private val deviceKeyQueueId: ((deviceId: String, key: String) -> String)? = null,
 ) {
     /** Runs until the connection is torn down or the coroutine is cancelled. */
     suspend fun run() = coroutineScope {
-        val push = status
-        // A new link-level attempt: reset what describes the BLE link only. Buffer, cloud and delivery
-        // figures belong to the device's cloud link, which may still be holding (and uploading) data.
-        push { it.copy(rssi = null, error = null) }
-
-        val stateJob = launch {
-            connection.state.collect { bleState -> push { it.copy(ble = bleState) } }
-        }
-
         try {
             // Order per the Spotflow BLE protocol: read Capabilities, Device ID and Session Metadata
             // first; enable the TX stream last.
@@ -78,21 +65,22 @@ internal class GatewaySession(
                 Slog.w(TAG, "could not read capabilities: ${t.message}")
                 false
             }
-            push { it.copy(otaEnabled = ota, otaTransfer = null) }
-            val deviceId = connection.readDeviceId()
-            if (deviceId.isBlank()) throw DeviceRejectedException("device reported an empty device ID")
-            push { it.copy(deviceId = deviceId) }
-            if (!deviceFilter.accept(connection.deviceAddress, deviceId)) {
-                throw DeviceRejectedException("device $deviceId rejected by the device filter")
+            diagnostics.update {
+                otaEnabled = ota
+                activeFirmwareTransfer = null
             }
+            val deviceId = selectedDeviceId ?: connection.readDeviceId()
+            if (deviceId.isBlank()) throw BleLinkException("device reported an empty device ID")
+            diagnostics.update { this.deviceId = deviceId }
 
-            val link = links.claim(deviceId, push)
+            val credential = deviceKeyQueueId?.let { bindDeviceKey(deviceId, it) }
+            val link = links.claim(deviceId, diagnostics, credential)
             link.setOtaEnabled(ota)
             // Everything of this session that uses the link; see the hand-over below.
             val linkUsers = ArrayList<Job>()
             try {
                 try {
-                    link.enqueueSessionMetadata(mqttConfig.topics.ingest, connection.readSessionMetadata())
+                    link.enqueueSessionMetadata(SpotflowTopics.INGEST, connection.readSessionMetadata())
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
@@ -114,7 +102,7 @@ internal class GatewaySession(
                 val artifactScope = this + artifactJob
                 val artifactServer = artifacts?.takeIf { ota }?.let { cache ->
                     ArtifactServer(cache, deviceId, connection::sendArtifactResponse) { transfer ->
-                        push { it.copy(otaTransfer = transfer) }
+                        diagnostics.update { activeFirmwareTransfer = transfer }
                     }
                 }
 
@@ -122,14 +110,14 @@ internal class GatewaySession(
                 linkUsers += launch {
                     connection.incoming.collect { message ->
                         val topic = when (message.type) {
-                            MessageType.TELEMETRY -> mqttConfig.topics.ingest
+                            MessageType.TELEMETRY -> SpotflowTopics.INGEST
                             MessageType.REPORTED_CONFIGURATION -> {
                                 if (deviceAcceptsConfiguration.complete(Unit)) {
                                     Slog.d(TAG, "$deviceId reported its configuration; desired configuration can be delivered")
                                 }
-                                mqttConfig.topics.reportedConfiguration
+                                SpotflowTopics.REPORTED_CONFIGURATION
                             }
-                            MessageType.OTA_D2C -> mqttConfig.topics.otaResults.takeIf { ota } ?: return@collect
+                            MessageType.OTA_D2C -> SpotflowTopics.OTA_RESULTS.takeIf { ota } ?: return@collect
                             MessageType.ARTIFACT_REQUEST -> {
                                 artifactServer?.handle(artifactScope, message.payload)
                                 return@collect
@@ -161,33 +149,14 @@ internal class GatewaySession(
 
                 // Reads are done: start the device's TX stream.
                 connection.startStreaming()
+                attachment.ready(deviceId)
                 streaming.complete(Unit)
 
-                // Sample the BLE signal strength, but only while someone is watching it.
-                val rssiJob = rssiWanted?.let { wanted ->
-                    launch {
-                        while (true) {
-                            wanted.first { it }
-                            try {
-                                val rssi = connection.readRssi()
-                                push { it.copy(rssi = rssi) }
-                            } catch (c: CancellationException) {
-                                throw c
-                            } catch (_: Throwable) {
-                                // transient; try again next tick
-                            }
-                            delay(RSSI_INTERVAL_MS)
-                        }
-                    }
+                val end = connection.state.first {
+                    it == ConnectionState.IDLE || it == ConnectionState.FAILED
                 }
-
-                try {
-                    connection.state.first {
-                        it == ConnectionState.DISCONNECTED || it == ConnectionState.FAILED
-                    }
-                } finally {
-                    rssiJob?.cancel()
-                }
+                // A link that failed (e.g. a call that timed out) ends the session with why.
+                if (end == ConnectionState.FAILED) throw connection.failure ?: IOException("the BLE link failed")
             } finally {
                 // NonCancellable so the hand-off runs even when the session is cancelled (Stop /
                 // Bluetooth off) — the link then lingers to upload (or at least persist) what's buffered.
@@ -201,16 +170,40 @@ internal class GatewaySession(
                 }
             }
         } finally {
-            stateJob.cancel()
+            diagnostics.update { activeFirmwareTransfer = null }
             withContext(NonCancellable) { connection.close() }
-            // The state collector is gone by now, so say it here: whatever ended the session — a drop, an
-            // error, a rejected key — the BLE link is no longer up.
-            push { it.copy(ble = ConnectionState.DISCONNECTED, rssi = null, otaTransfer = null) }
+        }
+    }
+
+    private suspend fun bindDeviceKey(deviceId: String, queueId: (String, String) -> String): DeviceIngestCredential {
+        val value = try {
+            connection.readIngestKey()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            val message = when ((e as? BleLinkException)?.gattStatus) {
+                BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION, BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION,
+                0x0C, 0x89 -> "Pair with the device before reading its ingest key"
+                else -> "Could not read the device ingest key; check that it is provisioned and the BLE link is paired"
+            }
+            // Don't forward transport messages or causes: a driver might include the raw value.
+            throw DeviceIngestKeyException(message)
+        }
+        val key = if (value.size in 1..512 && value.all { it in 0x21..0x7e }) {
+            value.toString(Charsets.US_ASCII)
+        } else {
+            throw DeviceIngestKeyException("The device returned a malformed ingest key")
+        }
+        return try {
+            DeviceIngestCredential(key, queueId(deviceId, key))
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: Exception) {
+            throw DeviceIngestKeyException("Could not identify the device ingest key's local buffer")
         }
     }
 
     private companion object {
         const val TAG = "SpotflowGateway"
-        const val RSSI_INTERVAL_MS = 5_000L
     }
 }

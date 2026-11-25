@@ -1,0 +1,26 @@
+{
+  "name": "@spotflow/react-native-ble-gateway-ble-manager",
+  "version": "0.1.0",
+  "description": "react-native-ble-manager driver for @spotflow/react-native-ble-gateway.",
+  "license": "BUSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spotflow-io/gateway-android.git",
+    "directory": "react-native/packages/ble-gateway-ble-manager"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "src",
+    "!src/**/__tests__"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@spotflow/react-native-ble-gateway": "^0.1.0",
+    "react-native-ble-manager": ">=12.6.1 <14"
+  }
+}

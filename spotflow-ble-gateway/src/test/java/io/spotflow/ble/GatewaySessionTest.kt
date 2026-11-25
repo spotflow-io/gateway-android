@@ -3,12 +3,14 @@ package io.spotflow.ble
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.spotflow.ble.cloud.MqttAuthException
-import io.spotflow.ble.cloud.MqttConfig
 import io.spotflow.ble.cloud.BufferPool
 import io.spotflow.ble.cloud.MessageStore
 import io.spotflow.ble.cloud.Uplink
 import io.spotflow.ble.cloud.UplinkDisconnectedException
 import io.spotflow.ble.cloud.UplinkThrottledException
+import io.spotflow.ble.diagnostics.DeviceDiagnostics
+import io.spotflow.ble.diagnostics.DeviceReport
+import io.spotflow.ble.diagnostics.FirmwareTransfer
 import io.spotflow.ble.ota.ArtifactCache
 import io.spotflow.ble.protocol.DeviceCapabilities
 import io.spotflow.ble.protocol.Message
@@ -42,13 +44,13 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import kotlin.properties.ReadOnlyProperty
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class GatewaySessionTest {
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
-    private val config = MqttConfig()
 
     @Before
     fun setUp() {
@@ -64,7 +66,7 @@ class GatewaySessionTest {
         online: StateFlow<Boolean> = MutableStateFlow(true),
     ): CloudLinkRegistry {
         val pool = BufferPool(store, ramMaxBytes = 1_000, flashMaxBytes = 10_000)
-        return CloudLinkRegistry(scope) { deviceId, push ->
+        return CloudLinkRegistry(scope) { deviceId, push, _ ->
             CloudLink(deviceId, pool.open(deviceId), uplink, push, online)
         }
     }
@@ -74,26 +76,25 @@ class GatewaySessionTest {
         store.enqueueAll(deviceId, listOf(MessageStore.Entry(1, "ingest-cbor", payload)))
     }
 
-    /** Mirrors the gateway: one status entry per address, shared by every session and cloud link. */
-    private val board = HashMap<String, GatewayDeviceState>()
+    /** Mirrors the gateway: one in-memory diagnostic row per address. */
+    private val board = HashMap<String, DeviceDiagnostics>()
+
+    private fun reporting(ble: FakeBleConnection) = ReadOnlyProperty<Any?, DeviceReport?> { _, _ ->
+        board[ble.deviceAddress]?.snapshot()
+    }
 
     private fun TestScope.session(
         ble: FakeBleConnection,
         uplink: FakeUplink,
         links: CloudLinkRegistry = registry(backgroundScope, uplink),
-        filter: DeviceFilter = DeviceFilter.AcceptAll,
-        rssiWanted: StateFlow<Boolean>? = null,
+        selectedDeviceId: String? = null,
         artifacts: ArtifactCache? = null,
-        onStatus: (GatewayDeviceState) -> Unit = {},
     ): GatewaySession {
         val address = ble.deviceAddress
-        val push: StatusPush = { change ->
-            val state = synchronized(board) {
-                change(board[address] ?: GatewayDeviceState(address)).also { board[address] = it }
-            }
-            onStatus(state)
-        }
-        return GatewaySession(ble, config, links, push, filter, rssiWanted, artifacts)
+        val attachment = Attachment(address) {}
+        val diagnostics = board.getOrPut(address) { DeviceDiagnostics(attachment) }
+        diagnostics.update { attachmentState = attachment.state }
+        return GatewaySession(ble, links, attachment, diagnostics, artifacts, selectedDeviceId)
     }
 
     // ---- OTA -----------------------------------------------------------------------------------------
@@ -108,15 +109,15 @@ class GatewaySessionTest {
         scope = backgroundScope,
     )
 
-    private fun TestScope.otaSession(ble: FakeBleConnection, uplink: FakeUplink, links: CloudLinkRegistry = registry(backgroundScope, uplink), onStatus: (GatewayDeviceState) -> Unit = {}) =
-        launch { runCatching { session(ble, uplink, links, artifacts = artifacts(), onStatus = onStatus).run() } }
+    private fun TestScope.otaSession(ble: FakeBleConnection, uplink: FakeUplink, links: CloudLinkRegistry = registry(backgroundScope, uplink)) =
+        launch { runCatching { session(ble, uplink, links, artifacts = artifacts()).run() } }
 
     @Test
     fun `an OTA device's OTA commands are subscribed to once its session metadata is out`() = runTest {
         val ble = otaDevice
         val uplink = FakeUplink()
-        var status: GatewayDeviceState? = null
-        val job = otaSession(ble, uplink) { status = it }
+        val status by reporting(ble)
+        val job = otaSession(ble, uplink)
         runCurrent()
 
         val (call, publishedBefore) = uplink.otaSubscriptionCalls.single()
@@ -145,8 +146,8 @@ class GatewaySessionTest {
     fun `a device without OTA, or a gateway with OTA off, gets no OTA at all`() = runTest {
         for ((ble, cache) in listOf(FakeBleConnection() to artifacts(), otaDevice to null)) {
             val uplink = FakeUplink()
-            var status: GatewayDeviceState? = null
-            val job = launch { runCatching { session(ble, uplink, artifacts = cache) { status = it }.run() } }
+            val status by reporting(ble)
+            val job = launch { runCatching { session(ble, uplink, artifacts = cache).run() } }
             runCurrent()
 
             ble.emit(Message(MessageType.OTA_D2C, byteArrayOf(0x55)))
@@ -244,8 +245,8 @@ class GatewaySessionTest {
     fun `artifact requests are answered over BLE, with the transfer shown in the device's status`() = runTest {
         val ble = otaDevice
         val uplink = FakeUplink()
-        var status: GatewayDeviceState? = null
-        val job = otaSession(ble, uplink) { status = it }
+        val status by reporting(ble)
+        val job = otaSession(ble, uplink)
         runCurrent()
 
         val url = "https://x".toByteArray()
@@ -259,11 +260,11 @@ class GatewaySessionTest {
         runCurrent()
 
         assertEquals(listOf(0x81, 0x82), ble.sentArtifactResponses.map { it[0].toInt() and 0xFF })
-        assertEquals(OtaTransfer(1000, 512), status!!.otaTransfer)
+        assertEquals(FirmwareTransfer(1000, 512), status!!.activeFirmwareTransfer)
         assertFalse("nothing of it goes to the cloud", uplink.published.any { it.second.contentEquals(open) })
 
         ble.drop(); runCurrent(); job.cancel()
-        assertNull(status!!.otaTransfer)
+        assertNull(status!!.activeFirmwareTransfer)
     }
 
     @Test
@@ -353,8 +354,8 @@ class GatewaySessionTest {
     fun `buffers while offline and flushes on recovery`() = runTest {
         val ble = FakeBleConnection()
         val uplink = FakeUplink().apply { failConnect = true }
-        var last: GatewayDeviceState? = null
-        val job = launch { runCatching { session(ble, uplink) { last = it }.run() } }
+        val last by reporting(ble)
+        val job = launch { runCatching { session(ble, uplink).run() } }
         runCurrent()
 
         ble.emit(Message(MessageType.TELEMETRY, ByteArray(10)))
@@ -369,7 +370,7 @@ class GatewaySessionTest {
 
         assertTrue("buffer should flush once online", uplink.published.isNotEmpty())
         assertEquals(0L, last?.ramBytes)
-        assertEquals(0L, last?.diskBytes)
+        assertEquals(0L, last?.flashBytes)
         assertEquals(0L, last?.pendingMessages)
         ble.drop(); runCurrent(); job.cancel()
     }
@@ -406,8 +407,8 @@ class GatewaySessionTest {
         assertTrue(job1.isCompleted)
 
         val second = FakeBleConnection()
-        var status: GatewayDeviceState? = null
-        val job2 = launch { session(second, uplink, links) { status = it }.run() }
+        val status by reporting(second)
+        val job2 = launch { session(second, uplink, links).run() }
         runCurrent()
         second.emit(Message(MessageType.TELEMETRY, byteArrayOf(8)))
         runCurrent()
@@ -426,8 +427,9 @@ class GatewaySessionTest {
         links.recover("test-device")
         runCurrent() // recovered link connects and drains; now lingering, still connected
 
-        var status: GatewayDeviceState? = null
-        val job = launch { session(FakeBleConnection(), uplink, links) { status = it }.run() }
+        val ble = FakeBleConnection()
+        val status by reporting(ble)
+        val job = launch { session(ble, uplink, links).run() }
         runCurrent()
 
         assertEquals(1, uplink.connectCount)
@@ -450,14 +452,14 @@ class GatewaySessionTest {
 
         // The device is slow to come back: the new session is still connecting (not yet at the claim).
         val second = FakeBleConnection().apply { prepareGate = CompletableDeferred() }
-        var status: GatewayDeviceState? = null
-        val job2 = launch { runCatching { session(second, uplink, links) { status = it }.run() } }
+        val status by reporting(second)
+        val job2 = launch { runCatching { session(second, uplink, links).run() } }
         advanceTimeBy(2_000); runCurrent()
         assertTrue("buffer still shown while reconnecting", (status?.ramBytes ?: 0) > 0)
 
         second.prepareGate!!.complete(Unit)
         advanceTimeBy(2_000); runCurrent()
-        assertTrue("buffer still shown after reconnect", (status?.ramBytes ?: 0) + (status?.diskBytes ?: 0) > 0)
+        assertTrue("buffer still shown after reconnect", (status?.ramBytes ?: 0) + (status?.flashBytes ?: 0) > 0)
 
         uplink.failConnect = false
         advanceTimeBy(60_000); runCurrent()
@@ -491,23 +493,10 @@ class GatewaySessionTest {
     }
 
     @Test
-    fun `device filter rejection publishes nothing`() = runTest {
-        val ble = FakeBleConnection()
-        val uplink = FakeUplink()
-        val error = runCatching {
-            session(ble, uplink, filter = { _, id -> id == "someone-else" }).run()
-        }.exceptionOrNull()
-
-        assertTrue("expected DeviceRejectedException but was $error", error is DeviceRejectedException)
-        assertEquals(0, uplink.connectCount)
-        assertTrue(uplink.published.isEmpty())
-    }
-
-    @Test
     fun `blank device id is rejected`() = runTest {
         val ble = FakeBleConnection(deviceId = "  ")
         val error = runCatching { session(ble, FakeUplink()).run() }.exceptionOrNull()
-        assertTrue("expected DeviceRejectedException but was $error", error is DeviceRejectedException)
+        assertTrue("expected BleLinkException but was $error", error is BleLinkException)
     }
 
     @Test
@@ -529,8 +518,8 @@ class GatewaySessionTest {
     fun `desired configuration is written in order and acknowledged after the write`() = runTest {
         val ble = FakeBleConnection()
         val uplink = FakeUplink()
-        var status: GatewayDeviceState? = null
-        val job = launch { runCatching { session(ble, uplink) { status = it }.run() } }
+        val status by reporting(ble)
+        val job = launch { runCatching { session(ble, uplink).run() } }
         runCurrent()
 
         val acks = mutableListOf<Int>()
@@ -540,7 +529,7 @@ class GatewaySessionTest {
 
         assertEquals(listOf(1, 2), ble.sentDesiredConfig.map { it[0].toInt() })
         assertEquals(listOf(1, 2), acks)
-        assertEquals("both counted as received", 2L, status?.received)
+        assertEquals("both counted as received", 2L, status?.cloudMessagesReceived)
         ble.drop(); runCurrent(); job.cancel()
     }
 
@@ -774,14 +763,14 @@ class GatewaySessionTest {
     fun `desired configuration the broker delivers again is written once and acknowledged for each delivery`() = runTest {
         val ble = FakeBleConnection().apply { reportsConfiguration = false }
         val uplink = FakeUplink()
-        var status: GatewayDeviceState? = null
-        val job = launch { runCatching { session(ble, uplink) { status = it }.run() } }
+        val status by reporting(ble)
+        val job = launch { runCatching { session(ble, uplink).run() } }
         runCurrent()
 
         var acks = 0
         repeat(3) { uplink.deliverDesired(byteArrayOf(8)) { acks++ } } // redelivered on two reconnects
         runCurrent()
-        assertEquals("one configuration, however often it was delivered", 1L, status?.received)
+        assertEquals("one configuration, however often it was delivered", 1L, status?.cloudMessagesReceived)
 
         ble.reportConfiguration()
         runCurrent()
@@ -816,8 +805,8 @@ class GatewaySessionTest {
             poison = { it[0].toInt() == 66 }
             disconnectOnPoison = true // the broker hangs up, failing everything that was in flight
         }
-        var status: GatewayDeviceState? = null
-        val job = launch { runCatching { session(ble, uplink) { status = it }.run() } }
+        val status by reporting(ble)
+        val job = launch { runCatching { session(ble, uplink).run() } }
         runCurrent()
 
         listOf(1, 66, 2, 3).forEach { ble.emit(Message(MessageType.TELEMETRY, byteArrayOf(it.toByte()))) }
@@ -835,8 +824,8 @@ class GatewaySessionTest {
     fun `a lost connection is reported at once and re-established without waiting for data`() = runTest {
         val ble = FakeBleConnection()
         val uplink = FakeUplink()
-        var status: GatewayDeviceState? = null
-        val job = launch { runCatching { session(ble, uplink) { status = it }.run() } }
+        val status by reporting(ble)
+        val job = launch { runCatching { session(ble, uplink).run() } }
         runCurrent()
         assertEquals(true, status?.cloudConnected)
 
@@ -855,12 +844,12 @@ class GatewaySessionTest {
         val uplink = FakeUplink()
         val links = registry(backgroundScope, uplink, online)
         val ble = FakeBleConnection()
-        var status: GatewayDeviceState? = null
-        val job = launch { runCatching { session(ble, uplink, links) { status = it }.run() } }
+        val status by reporting(ble)
+        val job = launch { runCatching { session(ble, uplink, links).run() } }
         advanceTimeBy(5 * 60_000L); runCurrent()
 
         assertEquals("no attempts while there is no network", 0, uplink.connectAttempts)
-        assertNull("being offline is not an error", status?.error)
+        assertNull("being offline is not an error", status?.cloudError)
         assertTrue("still buffering", (status?.pendingMessages ?: 0) > 0)
 
         online.value = true
@@ -875,10 +864,11 @@ class GatewaySessionTest {
         val online = MutableStateFlow(true)
         val uplink = FakeUplink().apply { failConnect = true }
         val links = registry(backgroundScope, uplink, online)
-        var status: GatewayDeviceState? = null
-        val job = launch { runCatching { session(FakeBleConnection(), uplink, links) { status = it }.run() } }
+        val ble = FakeBleConnection()
+        val status by reporting(ble)
+        val job = launch { runCatching { session(ble, uplink, links).run() } }
         advanceTimeBy(120_000); runCurrent() // by now the backoff between attempts is at its 30 s maximum
-        assertEquals(DeviceError.Kind.CLOUD_UNREACHABLE, status?.error?.kind)
+        assertEquals(DeviceError.Kind.CLOUD_UNREACHABLE, status?.cloudError?.kind)
         val attempts = uplink.connectAttempts
 
         online.value = false
@@ -889,19 +879,8 @@ class GatewaySessionTest {
 
         assertEquals(attempts + 1, uplink.connectAttempts)
         assertEquals(true, status?.cloudConnected)
-        assertNull("a working connection clears the cloud error", status?.error)
+        assertNull("a working connection clears the cloud error", status?.cloudError)
         job.cancel()
-    }
-
-    @Test
-    fun `a rejected key is reported as such and the session ends disconnected`() = runTest {
-        val ble = FakeBleConnection()
-        val uplink = FakeUplink().apply { authFail = true }
-        var status: GatewayDeviceState? = null
-        runCatching { session(ble, uplink) { status = it }.run() }
-
-        assertEquals(DeviceError.Kind.AUTH_REJECTED, status?.error?.kind)
-        assertEquals("the BLE link went down with the session", ConnectionState.DISCONNECTED, status?.ble)
     }
 
     @Test
@@ -914,11 +893,11 @@ class GatewaySessionTest {
         links.recover("test-device")
         runCurrent()
 
-        val first = async { runCatching { links.claim("test-device") {} } }
+        val first = async { runCatching { links.claim("test-device", null) } }
         try {
             runCurrent() // waiting for the lingering upload to let go
             assertFalse(first.isCompleted)
-            val second = runCatching { links.claim("test-device") {} }
+            val second = runCatching { links.claim("test-device", null) }
             assertTrue("expected DuplicateDeviceException but was $second", second.exceptionOrNull() is DuplicateDeviceException)
         } finally {
             gate.complete(Unit) // also when an assertion failed: nothing may be left waiting on it
@@ -949,19 +928,6 @@ class GatewaySessionTest {
         assertEquals("a link has one consumer at a time", 1, uplink.maxConcurrentConnects)
     }
 
-    @Test
-    fun `signal strength is read only while someone is watching`() = runTest {
-        val ble = FakeBleConnection()
-        val watching = MutableStateFlow(false)
-        val job = launch { runCatching { session(ble, FakeUplink(), rssiWanted = watching).run() } }
-        advanceTimeBy(60_000); runCurrent()
-        assertEquals(0, ble.rssiReads)
-
-        watching.value = true
-        advanceTimeBy(12_000); runCurrent()
-        assertTrue("expected a few reads but was ${ble.rssiReads}", ble.rssiReads in 2..4)
-        ble.drop(); runCurrent(); job.cancel()
-    }
 }
 
 /** A controllable [BleConnection] for tests. */
@@ -969,11 +935,10 @@ internal class FakeBleConnection(
     override val deviceAddress: String = "AA:BB:CC:DD:EE:FF",
     private val deviceId: String = "test-device",
 ) : BleConnection {
-    private val stateFlow = MutableStateFlow(ConnectionState.DISCONNECTED)
+    private val stateFlow = MutableStateFlow(ConnectionState.IDLE)
     override val state: StateFlow<ConnectionState> = stateFlow
     private val channel = Channel<Message>(Channel.UNLIMITED)
     override val incoming: Flow<Message> = channel.receiveAsFlow()
-    override val mtu = 247
     val sentDesiredConfig = mutableListOf<ByteArray>()
     var failDesiredWrites = 0
 
@@ -985,7 +950,6 @@ internal class FakeBleConnection(
         private set
 
     override suspend fun prepare() {
-        stateFlow.value = ConnectionState.CONNECTING
         prepareGate?.await()
         prepareFailure?.let { throw it }
         operations += "prepare"
@@ -997,15 +961,20 @@ internal class FakeBleConnection(
     var reportsConfiguration = true
     override suspend fun startStreaming() {
         operations += "notifications"
-        stateFlow.value = ConnectionState.READY
+        stateFlow.value = ConnectionState.STREAMING
         if (reportsConfiguration) reportConfiguration()
     }
     fun reportConfiguration() { emit(Message(MessageType.REPORTED_CONFIGURATION, byteArrayOf(0x7E))) }
     override suspend fun readDeviceId(): String { operations += "deviceId"; return deviceId }
+    var deviceKeyValue: ByteArray? = null
+    var keyReadFailure: BleLinkException? = null
+    override suspend fun readIngestKey(): ByteArray {
+        operations += "ingestKey"
+        keyReadFailure?.let { throw it }
+        return deviceKeyValue ?: throw BleLinkException("characteristic missing")
+    }
     var sessionMetadata = "meta".toByteArray()
     override suspend fun readSessionMetadata(): ByteArray { operations += "metadata"; return sessionMetadata }
-    var rssiReads = 0
-    override suspend fun readRssi(): Int { rssiReads++; return -55 }
     override suspend fun sendDesiredConfiguration(payload: ByteArray) {
         if (failDesiredWrites > 0) {
             failDesiredWrites--
@@ -1029,7 +998,7 @@ internal class FakeBleConnection(
     override suspend fun close() { closed = true }
 
     fun emit(message: Message) { channel.trySend(message) }
-    fun drop() { stateFlow.value = ConnectionState.DISCONNECTED }
+    fun drop() { stateFlow.value = ConnectionState.IDLE }
 }
 
 /**

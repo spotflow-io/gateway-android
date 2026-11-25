@@ -132,15 +132,33 @@ class MessageStoreTest {
 
         open(maxBytes = 10_000)
 
-        assertEquals(setOf("dev-1", "dev-2"), store.storedDeviceIds().toSet())
-        assertEquals(5L, store.peek("dev-1")!!.seq)
-        assertEquals(5L, store.bytes("dev-1"))
-        assertEquals(4L, store.bytes("dev-2"))
+        val dev1 = MessageStore.suppliedKeyQueue("dev-1")
+        val dev2 = MessageStore.suppliedKeyQueue("dev-2")
+        assertEquals(setOf(dev1, dev2), store.storedDeviceIds().toSet())
+        assertEquals(5L, store.peek(dev1)!!.seq)
+        assertEquals(5L, store.bytes(dev1))
+        assertEquals(4L, store.bytes(dev2))
         assertEquals(
             "legacy files are removed",
             listOf("spotflow_buffer.db"),
             context.databaseList().filter { it.endsWith(".db") },
         )
+    }
+
+    @Test
+    fun `upgrading a shared v1 database preserves messages under supplied-key IDs only`() {
+        context.openOrCreateDatabase("spotflow_buffer.db", 0, null).use { db ->
+            db.execSQL("CREATE TABLE q (device TEXT NOT NULL, seq INTEGER NOT NULL, topic TEXT NOT NULL, " +
+                "payload BLOB NOT NULL, len INTEGER NOT NULL, PRIMARY KEY (device, seq))")
+            db.execSQL("INSERT INTO q VALUES ('device:abc', 1, 'ingest-cbor', X'01', 1)")
+            db.execSQL("INSERT INTO q VALUES ('gateway:device:abc', 1, 'ingest-cbor', X'02', 1)")
+            db.version = 1
+        }
+        open(maxBytes = 10_000)
+
+        assertNull(store.peek(MessageStore.deviceKeyQueue("abc")))
+        assertEquals(1.toByte(), store.peek(MessageStore.suppliedKeyQueue("device:abc"))!!.payload.single())
+        assertEquals(2.toByte(), store.peek(MessageStore.suppliedKeyQueue("gateway:device:abc"))!!.payload.single())
     }
 
     @Test

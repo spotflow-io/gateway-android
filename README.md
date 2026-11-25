@@ -9,8 +9,8 @@ included: it relays a device's update commands and results and downloads its fir
 [OTA updates](#ota-updates)).
 
 The goal is drop-in integration for hardware vendors who already ship an Android companion app (e.g. a
-smart thermostat): add the library, hand it a connection or let it scan, and their BLE devices show up in
-Spotflow.
+smart thermostat): add the library, hand it the connections the app already holds — or let its managed
+layer scan and connect — and their BLE devices show up in Spotflow.
 
 > **Download:** each [GitHub Release](../../releases) (published automatically on every `v*` tag) attaches
 > the demo **APK** (sideload to try the gateway) and the library, as a **Maven repository zip** (the way
@@ -22,6 +22,7 @@ Spotflow.
 | --- | --- |
 | `spotflow-ble-gateway` | The reusable library (`io.spotflow.ble`), published as an AAR. |
 | `app` | A reference gateway app that uses the library. |
+| `react-native/` | npm packages: the gateway as a React Native module, and its `react-native-ble-manager` driver ([README](react-native/README.md)). |
 
 ### Demo app
 
@@ -31,16 +32,17 @@ gateway runs: it keeps relaying with the old ones, and the main screen offers a 
 them within seconds (instead of a Stop/edit/Start round that leaves devices waiting). The app runs the
 gateway in the foreground service and the main screen lists every device it relays — tap a name to
 collapse or expand its details — with a status marker (green when relaying), its BLE and MQTT state,
-signal strength, messages waiting to upload, **Forwarded** (messages delivered to the cloud) and
+messages waiting to upload, **Forwarded** (messages delivered to the cloud) and
 **Received** (desired configuration received from the cloud, e.g. a log-severity change made in the
 portal). While no device is listed it says what discovery is doing (scanning, waiting for Bluetooth,
 retrying a failed scan). The header shows the app version, and a line under **Devices** shows the
-gateway-wide buffer use against the limits in Settings (amber above 80%; it says so when there is no
-network). The ingest key is stored encrypted with the Android Keystore, and a gateway left running
+gateway-wide buffer use against the limits in Settings (amber above 80%). The ingest key is stored
+encrypted with the Android Keystore, and a gateway left running
 resumes by itself after the app is updated or the phone reboots.
 
-The demo relays every Spotflow device in range. An app for real devices passes a `DeviceFilter` that
-accepts only its own — see the security note under [Managed mode](#managed-mode-library-owns-the-connection).
+The demo runs a managed gateway that relays every Spotflow device in range. An app for real devices passes
+a `DeviceFilter` that accepts only its own — see the security note under
+[Managed gateway](#managed-gateway-the-library-finds-and-connects-devices).
 
 ## How it works
 
@@ -52,7 +54,7 @@ flowchart LR
         direction TB
         subgraph BLE["BLE session · ends when the link drops"]
             direction TB
-            S["SpotflowGattSession<br/>serialized GATT queue<br/>ACK/NACK of OTA commands"]
+            S["LinkConnection<br/>over a BleLink: timed calls,<br/>ACK/NACK of OTA commands"]
             F["FrameCodec<br/>reassemble fragments"]
             A["ArtifactServer<br/>open · read · close"]
             S --> F
@@ -98,9 +100,9 @@ devices never come back.
 - **GATT** service `26530001-81E5-4861-82AE-2C92E6887922`, characteristics: Capabilities (`0002`),
   Device ID (`0003`), Session Metadata (`0004`), TX Stream `NOTIFY` (`0005`), RX Stream `WRITE`-no-response
   (`0006`).
-- **Connection order** — as the protocol specifies: discover services and negotiate MTU, read
-  Capabilities, Device ID and Session Metadata, and only then enable TX Stream
-  notifications. (Some devices stop answering reads once their TX stream is running.)
+- **Connection setup** — discover services and negotiate MTU, read Capabilities, Device ID and Session
+  Metadata before enabling TX Stream notifications. Managed discovery reads the ID first so it can skip
+  devices it won't relay. Some devices stop answering reads once their TX stream is running.
 - **Link parameters** — if a device requests a supervision timeout shorter than 2 s (seen: 420 ms, which
   drops the link on any brief radio gap), the gateway asks Android for balanced connection priority, which
   renegotiates a 5 s timeout. Managed mode only.
@@ -152,8 +154,8 @@ devices never come back.
 ### OTA updates
 
 Protocol 1.1 lets a device take firmware updates through its gateway, and this one relays them for every
-device whose Capabilities advertise OTA (turn that off with `OtaConfig(enabled = false)`). The update is
-deployed in the Spotflow portal as for any other device; the gateway carries three things:
+device whose Capabilities advertise OTA (turn that off with `GatewayOptions { otaEnabled = false }`). The
+update is deployed in the Spotflow portal as for any other device; the gateway carries three things:
 
 - **Commands** — the gateway subscribes to the device's OTA commands (`ota-cbor-c2d`) once its session
   metadata is published, the order the Device SDK follows on MQTT, and subscribes again on every new MQTT
@@ -176,16 +178,18 @@ deployed in the Spotflow portal as for any other device; the gateway carries thr
     resumes from where it was) or disconnects; the device's next open finds it done.
   - HTTPS only. Redirects are followed, but the secret goes only to the URL's own host. A download cut
     off midway resumes with an HTTP range request.
-  - An artifact over `OtaConfig.maxArtifactBytes` (32 MiB by default, the Web App gateway's limit) is
+  - An artifact over `GatewayOptions.otaMaxArtifactBytes` (32 MiB by default, the Web App gateway's limit) is
     refused as too large. Download failures are reported to the device as "access denied" (HTTP 401, 403,
     404) or "transient failure" (network, HTTP 5xx), which the Device SDK retries with backoff.
   - Up to four artifacts are kept, the least recently opened dropped first. They are deleted when the
     gateway shuts down, and anything left by an earlier run before the first download.
   - URLs and secrets never appear in logs.
 
-`GatewayDeviceState.otaEnabled` says whether a device takes updates through the gateway, and
-`otaTransfer` shows the transfer under way: the artifact's size (null while the gateway is still
-downloading it) and how much of it the device has read. The demo app shows both.
+`DeviceReport.otaEnabled` says whether a device takes updates through the gateway, and
+`activeFirmwareTransfer` shows the current transfer, or null if none is tracked. While the artifact is
+being prepared, `sizeBytes` is null. `lastReadEndOffsetBytes` is the end offset of the latest block the
+gateway prepared for a device read, not proof of receipt or installation. The transfer state clears
+when the transfer closes or the BLE session ends; it does not report update success.
 
 The gateway handles the download credentials and decides which bytes reach the device, but it does not
 vouch for the firmware: that is checked on the device (its update handler and bootloader verify the
@@ -198,15 +202,17 @@ The library is built in Kotlin's explicit-API mode: what is public is public on 
 `spotflow-ble-gateway/api/spotflow-ble-gateway.api` records it (CI fails if the two disagree). Everything
 else is internal.
 
-- **Public** — `SpotflowGateway`, `GattAttachment`, `DeviceFilter`, `GatewayDeviceState` / `DeviceError`,
-  `GatewayStatus` / `ScanState`, `SpotflowLog`; `cloud/` `MqttConfig` / `SpotflowTopics` / `PublishQos`,
-  `OtaConfig` / `OtaTransfer`, `CredentialsProvider` + `StaticIngestKey`, `BufferUsage`;
-  `transport/ConnectionState`;
-  `protocol/GattProfile` (the UUIDs); `service/SpotflowGatewayService`.
+- **Public** — `SpotflowGateway`, `GattBridge`, `BleLink` / `NotificationListener` /
+  `GattRef` / `BleLinkException`, `Attachment` / `AttachmentState` / `AttachmentEnd`, `DeviceError`,
+  `GatewayOptions`, `SpotflowLog` / `SpotflowLogger`; `cloud/` `CloudEndpoint`, `CredentialsProvider` +
+  `StaticIngestKey`; `diagnostics/` `GatewayReport`, `DeviceReport`, `BufferUsage`, `FirmwareTransfer`;
+  `protocol/GattProfile` (UUIDs, advertisement matching, device ID reads); `managed/` `ManagedGateway`,
+  `DeviceFilter`, `ScanStatus` / `ScanState`, `SpotflowGatewayService`.
 - `protocol/` — `MessageType`, `Message`, `FrameCodec`, `DeviceCapabilities`, `ArtifactProtocol` (pure
   JVM, unit-tested).
-- `transport/` — `BleConnection` (with `ManagedBleConnection` / `AttachedBleConnection`),
-  `SpotflowGattSession` (serialized GATT command queue + callback bridge), `SpotflowScanner`.
+- `transport/` — `LinkConnection` (the protocol core over any `BleLink`: framing, ACK/NACK, timing
+  every call), behind the `BleConnection` interface; `GattClient` (the native `BleLink` adapter: a
+  `BluetoothGatt`'s callbacks and serialized operation queue, behind `GattBridge`).
 - `cloud/` — `MqttUplink` (behind the `Uplink` interface), `StoreAndForwardBuffer` (a device's two-tier
   RAM+flash queue) within `BufferPool` (the gateway-wide RAM and flash budget), backed by `MessageStore`
   (the shared SQLite flash tier).
@@ -214,7 +220,11 @@ else is internal.
   downloaded artifacts), `HttpArtifactDownloader` (behind the `ArtifactDownloader` interface).
 - `GatewaySession` (BLE side), `CloudLink` / `CloudLinkRegistry` (per-device cloud side that outlives BLE
   sessions) — orchestration. `GatewayPlatform` is the seam between that logic and Android (adapter,
-  scanner, GATT, connectivity, MQTT client), which is what lets the reconnect logic be unit-tested.
+  connectivity, MQTT client), which is what lets it be unit-tested.
+- `managed/` — the managed gateway, a layer on top of the relay: `ManagedGateway`
+  (discovery and the per-device reconnect loop), `ManagedGattCallback` (the GATT callback it registers:
+  prepares the link, forwards events to `GattBridge`, guards the supervision timeout), `SpotflowScanner`,
+  `ManagedPlatform` (its own seam to Android), `SpotflowGatewayService`.
 
 ## Adding the library
 
@@ -272,66 +282,131 @@ R8 / ProGuard rules come with the library (CI builds the demo shrunk by R8 to ch
 
 ## Quick start
 
-### Managed mode (library owns the connection)
+The library has two layers:
+
+- **`SpotflowGateway`** (`io.spotflow.ble`) — the core, for apps that hold their own BLE connections to
+  their devices. The app attaches each connection; the gateway speaks the Spotflow protocol over it and
+  relays the device to the cloud. The app decides which devices to relay and reconnects them.
+- **`ManagedGateway`** (`io.spotflow.ble.managed`) — a standalone gateway: it scans for Spotflow
+  advertisements, connects to read each candidate's device ID, and relays and reconnects only the devices
+  its `DeviceFilter` accepts. For apps with no BLE connection of their own, like the demo.
+
+Create one gateway per process.
+
+### Attaching a link (any BLE library)
+
+For apps whose BLE library keeps the `BluetoothGatt` to itself (e.g. a React Native app on
+`react-native-ble-manager` or `react-native-ble-plx`): implement `BleLink` over the library — reads, writes
+without response, enabling and disabling notifications, and the disconnect — and attach it. The gateway
+keeps the Spotflow protocol and the cloud side; the host keeps permissions, discovery, connecting, MTU
+negotiation, reconnecting and its operation queue. React Native apps on `react-native-ble-manager` can use
+the [React Native packages](react-native/README.md) instead of writing the link.
+
+Use `GattProfile.SERVICE` as the UUID in your BLE library's scan filter. If you already scan broadly,
+`GattProfile.advertisesService(scanResult)` checks whether an Android scan result lists the UUID. A
+missing UUID in the advertisement doesn't rule out a service on the connected device. The Spotflow
+device ID is read over GATT, not from the advertisement.
 
 ```kotlin
-val gateway = SpotflowGateway(
+val gateway = SpotflowGateway(context, StaticIngestKey("<ingest-key>"))
+// Optional: select by ID while connected, before starting a relay.
+if (GattProfile.readDeviceId(myLink) in myProvisionedDevices) {
+    val attachment = gateway.attach(myLink)
+    // Observe attachment.state for Starting, Ready(deviceId), or Ended(result).
+    // Later, to stop relaying without disconnecting:
+    attachment.detach()             // returns immediately
+    val end = attachment.awaitEnd() // wait for the result after best-effort cleanup
+}
+```
+
+- **Device-provisioned ingest keys:** use `SpotflowGateway.usingDeviceIngestKeys(context)` instead of
+  supplying credentials. The gateway reads the optional Ingest Key characteristic on each attachment
+  and reports `DEVICE_INGEST_KEY` if it cannot obtain a valid key. There is no fallback between the
+  two modes. After a process restart, device-key data on flash waits for the same device ID, key and
+  broker endpoint. React Native uses device keys by default.
+- **One link is one connected, service-discovered connection.** When it drops, the attachment ends
+  (`DISCONNECTED`); attach a fresh link after reconnecting. Every attachment ends exactly once, and
+  `awaitEnd()` says why: `DETACHED`, `REPLACED` (the same address was attached again),
+  `DISCONNECTED` or `FAILED` (with the `DeviceError`, e.g.
+  `DUPLICATE_DEVICE` for another peripheral reporting a device ID already relayed).
+- **Cleanup is best effort.** Before `awaitEnd()` returns, the gateway waits up to 2 s for TX notifications
+  to be disabled. A pending operation may still finish later; the gateway does not disconnect the link.
+  Only the attachment handle stops a host-owned session. To stop the entire gateway, call `shutdown()`:
+  it returns immediately, releases resources and hands off buffered data to flash in the background,
+  and does not accept any new attachments.
+- **The adapter's contract** is on `BleLink`. In short: run calls in the order the gateway issues them and
+  settle every one, also those the gateway stopped waiting for; `writeWithoutResponse` returns once the
+  last value is on its way, not merely queued; `enableNotifications` and `disableNotifications` return
+  once the CCCD write has completed; `maxWritePayloadBytes` is the ATT MTU minus 3 (20 if unknown); report
+  failures as `BleLinkException` with the GATT status where there is one.
+- **Timing.** Every call is timed from when it is issued, including any time behind the host's own
+  operations: 10 s for a read or a change to notifications, 10 s plus 100 ms per frame for a write. A call
+  that runs out ends the attachment `FAILED`. Negotiate a larger MTU before attaching.
+- **Device checks.** `GattProfile.readDeviceId(link)` reads only the ID and does not start relaying. With
+  `attach(link)` the gateway reads it again during setup. An ID allowlist is not authentication: protect
+  the link with encryption and restrict pairing. Managed discovery relays under the exact ID it checked.
+
+### Attaching a `BluetoothGatt`
+
+For apps that hold a `BluetoothGatt` themselves, `GattBridge` supplies the `BleLink` for the same
+`gateway.attach` call. Use one bridge per `BluetoothGatt`:
+
+```kotlin
+val bridge = GattBridge()
+val gatt = device.connectGatt(context, false, bridge.callback, BluetoothDevice.TRANSPORT_LE)
+
+// In your setup flow, after connection, service discovery and any MTU exchange have finished:
+val attachment = gateway.attach(bridge.link(gatt))
+```
+
+**Host contract:**
+1. If you use your own callback, forward connection and MTU changes, characteristic reads/writes/
+   notifications, and descriptor writes to `bridge.callback`. Forward both the API 33+ and older
+   overloads of `onCharacteristicRead` and `onCharacteristicChanged`.
+2. Run your own GATT operations inside `bridge.runExclusive { gatt -> ... }` while attached — the
+   Android BLE stack allows only one outstanding GATT operation at a time, and this serializes yours with
+   the gateway's. (As a second line of defence the gateway ignores results for characteristics it did not
+   ask about.) Keep the blocks short: a gateway operation has 10 s, counted from when it is issued, so
+   also while it waits for your block; one that runs out ends the session. Reading diagnostics does
+   not trigger GATT operations. If the app needs signal strength, it can read it through its own stack.
+3. The host owns setup and reconnection. After reconnecting and preparing the same GATT, attach a fresh
+   `bridge.link(gatt)`; its callback stays valid. If the bridge missed the MTU exchange, pass the known
+   `mtu` to `link`; otherwise it falls back to 20-byte writes when it has not seen an MTU.
+
+### Managed gateway (the library finds and connects devices)
+
+```kotlin
+val managed = ManagedGateway(
     context,
     StaticIngestKey("<ingest-key>"),
     deviceFilter = { address, deviceId -> deviceId in myProvisionedDevices },
 )
-gateway.startScanning() // scans for the Spotflow service, connects, relays, reconnects
+managed.startScanning() // scans for the Spotflow service, connects, relays, reconnects
+managed.diagnosticsSnapshot() // device and buffer report; observe scanStatus separately
 ```
 
-> **Security — the `deviceFilter` is required for a reason.** Managed mode connects to anything that
-> advertises the Spotflow service, and the BLE protocol does not authenticate devices. A filter that
+> **Security — the `deviceFilter` is required for a reason.** The managed gateway connects to anything
+> that advertises the Spotflow service, and the BLE protocol does not authenticate devices. A filter that
 > accepts everything (`DeviceFilter.AcceptAll`, fine for a demo or a lab) lets any nearby peripheral
 > publish data under any device ID in your workspace, using your ingest key, and receive that device's
 > desired configuration. The gateway also refuses a second live session for a device ID that is already
 > connected, and never relays a device with an empty ID.
 
-A device the filter rejects is disconnected and left alone; it is asked about again after ten minutes,
-or right away after `gateway.retryStopped()` — call that when what the filter accepts has changed (the
-user signed in, a device was provisioned). `gateway.detach(address)` takes a device out for good: the
-scan leaves it alone until `retryStopped()`.
+A device the filter rejects is disconnected without attaching. It can be picked up again after ten
+minutes or on the next advertisement after `managed.retry()` — for example, after provisioning a new ID.
+`managed.ignoreDevice(address)` stops a managed device and excludes it from discovery until you call
+`managed.allowDevice(address)`; `retry()` never clears an explicit exclusion.
 
-### Attach mode (host already owns the connection)
-
-For apps that already hold a `BluetoothGatt` to the same device and don't want a second connection. It
-takes two steps, so that the gateway never issues a GATT operation before its callbacks can reach it:
-
-```kotlin
-val attachment = gateway.newAttachment()
-
-// 1. Wire its callback. Either pass it to connectGatt…
-val gatt = device.connectGatt(context, false, attachment.gattCallback, BluetoothDevice.TRANSPORT_LE)
-// …or, if you have a callback of your own, forward every event it receives to attachment.gattCallback.
-
-// 2. Start relaying. The GATT may still be connecting; the gateway waits for the link.
-attachment.start(gatt)
-```
-
-**Host contract for attach mode:**
-1. `attachment.gattCallback` must receive **every** event of the GATT — if you fan out from your own
-   callback, forward all of them, including both the API 33+ and the older overloads of
-   `onCharacteristicRead` and `onCharacteristicChanged`.
-2. Run your own GATT operations inside `attachment.runExclusive { gatt -> ... }` while attached — the
-   Android BLE stack allows only one outstanding GATT operation at a time, and this serializes yours with
-   the gateway's. (As a second line of defence the gateway ignores results for characteristics it did not
-   ask about.) The gateway doesn't poll RSSI on an attached connection unless you ask for it with
-   `newAttachment(pollRssi = true)`.
-3. The host owns connect/disconnect and reconnection. A relaying session ends when the link drops; call
-   `attachment.start(gatt)` again when it is back — the callback stays valid, so a GATT reconnected with
-   `gatt.connect()` needs no rewiring.
-4. `attachment.detach()` stops relaying and tells the device to stop streaming; the link stays up.
-5. An attachment relays one device at a time; create one per device to relay several.
+The app can also call `managed.attach(link)` to relay a host-owned connection. This bypasses the managed
+filter: the app selects the device and controls its attachment. The scan leaves the device alone while
+the host is relaying it, and may pick it up again afterwards if it isn't ignored.
 
 ### Background operation (screen off)
 
-Run the gateway from the bundled foreground service:
+Run a managed gateway from the bundled foreground service:
 
 ```kotlin
-SpotflowGatewayService.gatewayFactory = { ctx -> SpotflowGateway(ctx, StaticIngestKey(key), deviceFilter) }
+SpotflowGatewayService.gatewayFactory = { ctx -> ManagedGateway(ctx, StaticIngestKey(key), deviceFilter) }
 SpotflowGatewayService.onReady = { it.startScanning() }
 SpotflowGatewayService.start(context)
 ```
@@ -352,21 +427,33 @@ the static `gatewayFactory` / `onReady` hooks are unset. **Set them from `Applic
 whenever the gateway should be running (the demo's `GatewayApp` does this from a persisted flag);
 otherwise the restarted service stops itself and relaying ends until the app is opened again.
 
+An app that attaches its own connections keeps them alive in a foreground service of its own, and holds
+its `SpotflowGateway` there.
+
 ### Observing the gateway
 
 ```kotlin
-gateway.devices      // StateFlow<Map<address, GatewayDeviceState>>: BLE and cloud state, counters, error
-gateway.status       // StateFlow<GatewayStatus>: scan state (and why it failed), network, storage
-gateway.bufferUsage  // StateFlow<BufferUsage>: RAM and flash use against the limits
+attachment.state                     // StateFlow<AttachmentState>: lifecycle of this attachment
+val report = gateway.diagnosticsSnapshot() // Same method on ManagedGateway
+report.devices                       // BLE and cloud state, counters, errors, OTA progress
+report.bufferUsage                   // RAM and flash usage, limits, and flash availability
+managed.scanStatus                   // StateFlow<ScanStatus>: what discovery is doing
 ```
 
-- `GatewayDeviceState.error` is typed: `DeviceError.kind` is one of `AUTH_REJECTED`, `CLOUD_UNREACHABLE`,
-  `BLUETOOTH`, `DUPLICATE_DEVICE`, with a message for display. All of them are retried.
-- `GatewayStatus.scan` says whether discovery is running — `SCANNING`, `WAITING_FOR_BLUETOOTH`,
-  `RETRYING` (with `scanError`, e.g. a missing permission) or `STOPPED`.
-- Signal strength (`rssi`) is sampled only while something collects `devices`.
-- `otaEnabled` and `otaTransfer` show whether a device takes OTA updates through the gateway and how far
-  the transfer of its firmware has got (see [OTA updates](#ota-updates)).
+- An attachment starts in `Starting`, becomes `Ready(deviceId)` when it can receive and buffer BLE
+  messages, and finishes in `Ended(result)` after cleanup. `Ready` doesn't imply an MQTT connection.
+  `awaitEnd()` returns the same result without requiring a state collector. The host decides when to
+  reattach; managed mode retries.
+- Diagnostics are built from in-memory counters on request; no BLE, network, or disk I/O is performed.
+  The demo takes a snapshot immediately and about once per second while visible. A device row shows the
+  latest attachment's state and any retryable `cloudError`; uploads may continue after the attachment ends.
+- `ScanStatus.state` says whether discovery is running — `SCANNING`, `WAITING_FOR_BLUETOOTH`, `RETRYING`
+  (with `error`, e.g. a missing permission) or `STOPPED`.
+- `bufferUsage.flashAvailable` is false if the persistent buffer could not be opened; `flashMaxBytes = 0`
+  separately indicates flash buffering was disabled in the options. Phone connectivity is monitored
+  internally; apps can observe Android connectivity separately if needed for their UI.
+- `otaEnabled` and `activeFirmwareTransfer` show whether a device supports OTA through the gateway and
+  the current firmware transfer (see [OTA updates](#ota-updates)).
 - The library logs to logcat at `INFO` and above, and its lines can contain device IDs. Route them
   elsewhere, raise the threshold or silence them through `SpotflowLog.logger` / `SpotflowLog.minPriority`.
 
@@ -390,29 +477,30 @@ flowchart TD
     F --> C
 ```
 
-- **Reconnect** — a dropped BLE link is reconnected automatically: right after a working session drops,
-  with a direct connect (about a second when the device is still in range); if that fails, with
-  `autoConnect` so Android re-attaches the moment the device reappears, with exponential backoff. A
-  device that stays away for 10 minutes is released (freeing one of Android's limited GATT client slots)
-  and picked up again by the scanner when it reappears.
-- **Discovery** — the scan runs for the life of the gateway, so it is frugal: `BALANCED` for the first two
-  minutes, to find what is in range quickly, then low-power (known devices reconnect through
-  `autoConnect`, so the scan only has to notice new ones). It is restarted every 25 minutes, inside the
-  30 minutes after which Android throttles a scan, and a scan that fails — which Android reports once and
-  never again — is retried with backoff rather than leaving discovery dead until Bluetooth is toggled.
+- **Reconnect** (managed gateway) — a dropped BLE link is reconnected automatically: right after a
+  working session drops, with a direct connect (about a second when the device is still in range); if
+  that fails, with `autoConnect` so Android re-attaches the moment the device reappears, with exponential
+  backoff. A device that stays away for 10 minutes is released (freeing one of Android's limited GATT
+  client slots) and picked up again by the scanner when it reappears.
+- **Discovery** (managed gateway) — the scan runs for the life of the gateway, so it is frugal:
+  `BALANCED` for the first two minutes, to find what is in range quickly, then low-power (known devices
+  reconnect through `autoConnect`, so the scan only has to notice new ones). It is restarted every 25
+  minutes, inside the 30 minutes after which Android throttles a scan, and a scan that fails — which
+  Android reports once and never again — is retried with backoff rather than leaving discovery dead until
+  Bluetooth is toggled.
 - **Network** — the gateway watches the phone's connectivity: with no network, uploads wait for one
   instead of retrying, and they resume the moment it is back rather than at the end of a backoff. A
   connection that drops is noticed as it happens — also during a quiet period — and re-established, and
   the device's session metadata is published on it first, since the cloud applies it per connection.
 - **Store-and-forward buffer** — a two-tier buffer keeps diagnostics flowing through outages without
   wearing the flash. In steady state messages flow through a small **RAM tier only** (no disk writes);
-  once the RAM tier fills (`ramBufferMaxBytes`, default 1 MiB — i.e. the network has been down a while) the
+  once the RAM tier fills (`ramBufferBytes`, default 1 MiB — i.e. the network has been down a while) the
   oldest messages **spill to a crash-safe, byte-bounded SQLite tier** that survives the app being killed
   or the phone rebooting. Flash is written, read and cleared in batches (one transaction each), so an
-  outage costs occasional flash writes rather than several per message. Total size is bounded by
-  `bufferMaxBytes` (default 50 MiB), and everything drains in FIFO order once connectivity returns —
-  whether or not the device is still connected. With `bufferMaxBytes` ≤ `ramBufferMaxBytes` there is no
-  flash tier at all (RAM-only). Trade-off: data still in the RAM tier is lost if the process is killed.
+  outage costs occasional flash writes rather than several per message. The flash tier is bounded by
+  `flashBufferBytes` (default 49 MiB), and everything drains in FIFO order once connectivity returns —
+  whether or not the device is still connected. With `flashBufferBytes = 0` there is no flash tier at
+  all (RAM-only). Trade-off: data still in the RAM tier is lost if the process is killed.
   Sizes count each message's payload plus an estimate of the overhead of holding it, so the limits track
   real use even when messages are tiny.
 - **Shared budget, fair eviction** — both limits apply to the **whole gateway**, however many devices it
@@ -425,17 +513,18 @@ flowchart TD
   moved into it on first start.
 - **Storage trouble** — the database is opened in the background, never on the thread that creates the
   gateway. If it cannot be opened (storage full or failing), the gateway keeps relaying with the RAM tier
-  only and says so in `GatewayStatus.storageAvailable`.
-- **Bluetooth off/on** — the gateway watches the Bluetooth adapter itself, so turning Bluetooth off and
-  back on tears down and re-establishes sessions automatically — even with the screen off, since it runs in
-  the foreground service. (Turning Bluetooth off often doesn't deliver a GATT disconnect callback, which
-  would otherwise leave a session parked forever.) The demo app additionally prompts to enable Bluetooth
-  before starting and shows a tappable banner if it's turned off while running.
+  only and says so in `BufferUsage.flashAvailable`.
+- **Bluetooth off/on** — the gateway watches the Bluetooth adapter itself, so turning Bluetooth off ends
+  every session as `DISCONNECTED` even when no GATT disconnect callback arrives (it often doesn't), which
+  would otherwise leave a session parked forever. The managed gateway also stops discovery and reconnects
+  its devices once Bluetooth is back — even with the screen off, since it runs in the foreground service.
+  The demo app additionally prompts to enable Bluetooth before starting and shows a tappable banner if
+  it's turned off while running.
 - **Cloud errors** — a rejected ingest key surfaces as `DeviceError.Kind.AUTH_REJECTED` with the broker's
-  CONNACK reason (e.g. `BAD_USER_NAME_OR_PASSWORD`). Instead of hammering the broker, the gateway asks the
-  `CredentialsProvider` again after a pause that grows from one to fifteen minutes — so a rotated or
-  corrected key is picked up — or at once on `retryStopped()`, which also retries the upload of data
-  buffered for devices that are no longer around.
+  CONNACK reason (e.g. `BAD_USER_NAME_OR_PASSWORD`), and ends the session. Instead of hammering the broker,
+  the managed gateway asks the `CredentialsProvider` again after a pause that grows from one to fifteen
+  minutes — so a rotated or corrected key is picked up — or at once on `managed.retry()`. Background
+  uploads also retry rejected credentials automatically, even if the device never reconnects.
 - **Poison messages** — a message the broker keeps refusing is dropped after 5 refusals; one the broker
   answers by hanging up, or never acknowledges, after 10 — so it can't block the rest of the buffer. This
   is judged only while that message is the only one in flight, so a bad message never takes its
@@ -450,24 +539,24 @@ flowchart TD
 ```kotlin
 val gateway = SpotflowGateway(
     context,
-    credentials = StaticIngestKey(key),   // or implement CredentialsProvider for rotation / per-device keys
-    deviceFilter = myFilter,
-    mqttConfig = MqttConfig(
-        bufferMaxBytes = 50L * 1024 * 1024,     // store-and-forward buffer, all devices (RAM + flash)
-        ramBufferMaxBytes = 1L * 1024 * 1024,   // RAM tier, all devices; spills to flash only past this
-        keepAliveSeconds = 60,                  // per device connection; shorter costs battery
-        // host / port / qos / topics are configurable; defaults target production
-    ),
-    otaConfig = OtaConfig(
-        enabled = true,                         // relay OTA updates of devices that support them
-        maxArtifactBytes = 32L * 1024 * 1024,   // largest firmware the gateway downloads
-    ),
+    StaticIngestKey(key),          // or implement CredentialsProvider for rotation / per-device keys
+    GatewayOptions {
+        endpoint = CloudEndpoint("mqtt.staging.example.com")   // default: Spotflow production
+        ramBufferBytes = 1L * 1024 * 1024     // RAM tier, all devices; spills to flash only past this
+        flashBufferBytes = 49L * 1024 * 1024  // flash tier, all devices; 0 for RAM only
+        otaEnabled = true                     // relay OTA updates of devices that support them
+        otaMaxArtifactBytes = 32L * 1024 * 1024
+    },
 )
 ```
 
-`SpotflowTopics` (inside `MqttConfig`) lets you override the topic names. `CredentialsProvider` is a
-functional interface, called on every connection attempt, so hosts can resolve the ingest key per device
-or refresh it on demand.
+Every option is optional; `GatewayOptions.DEFAULT` holds the defaults shown above (with the production
+endpoint), and `options.copy { … }` derives a variant. From Java, use `new GatewayOptions.Builder()` and its
+setters, then `build()`. `ManagedGateway` takes the same options after its `DeviceFilter`.
+
+The connection to the broker is always TLS and publishes with QoS 1, to the platform's topics.
+`CredentialsProvider` is a functional interface, called on every connection attempt, so hosts can resolve
+the ingest key per device or refresh it on demand.
 
 ## Permissions and manifest
 
@@ -554,14 +643,21 @@ publish.
      shared by devices and outliving the session that started it, failures, the size limit, eviction.
    - `HttpArtifactDownloaderTest` — the real download against a local HTTP server: the `OtaSecret`
      header, redirects (the secret kept from other hosts), status mapping, size limits, resuming.
-   - `SpotflowGatewayTest` — the gateway's own logic against a fake platform, in virtual time: scan retry
-     and restart, the per-device reconnect loop, rejected keys and rejected devices, Bluetooth off/on,
-     data handed over across a restart.
-   - `SpotflowGattSessionTest`, `GattAttachmentTest` — the GATT engine and attach mode against a simulated
-     peripheral: which callback completes which operation, timeouts, OTA commands' ACK/NACK and
-     retransmission, attaching to a GATT that is still
-     connecting, detaching. They run on Android 8 and Android 15, covering both ways Android passes GATT
-     values (through the characteristic before Android 13, as arguments since).
+   - `SpotflowGatewayTest` — the gateway's own logic against a fake platform, in virtual time: attached
+     sessions, a rejected key, automatic backlog retry, Bluetooth off, data handed over across a restart.
+   - `ManagedGatewayTest` — the managed layer driving the real gateway over simulated peripherals, in
+     virtual time: scan retry and restart, the per-device reconnect loop, rejected keys and rejected
+     devices, Bluetooth off/on, detaching, sharing the gateway with the app's own attachments.
+   - `LinkConnectionTest` — the protocol core over a fake `BleLink`: framing at the link's frame size,
+     timing every call (abandoned calls are left to settle, not cancelled), one call at a time, OTA
+     commands' ACK/NACK and retransmission, turning the stream off on close.
+   - `AttachmentTest` — `attach(link)` end to end: protocol order, every way an attachment ends,
+     replacement after cleanup, duplicate devices, and device checks.
+   - `GattClientTest`, `GattBridgeTest` — the native adapter and attach mode against a simulated
+     peripheral: which callback completes which operation, the GATT queue (held for an operation nobody
+     waits for any more), notifications, MTU tracking, reconnecting and detaching. They run
+     on Android 8 and Android 15, covering both ways Android passes GATT values (through the
+     characteristic before Android 13, as arguments since).
    - `NetworkMonitorTest` — following the phone's connectivity.
    - `DemoScreensTest` (in `app`) — the demo's screens come up and show what a real gateway, hosted by the
      real service, reports.
@@ -577,7 +673,7 @@ publish.
    - **restart the device** after changing the severity — the configured severity is restored;
    - build the sample **with OTA** (its `ota.conf`) and `CONFIG_SPOTFLOW_BLE_REQUIRE_ENCRYPTION=y` —
      unpaired, the session fails with an error asking for pairing; paired with the phone, it relays as
-     before and the demo shows an **OTA update** line;
+     before and the demo shows a **Firmware transfer** line;
    - **deploy an update** to that device in the portal — the demo shows the firmware downloading, then the
      transfer's progress; the device reboots into the new firmware and the portal shows the update as
      done;

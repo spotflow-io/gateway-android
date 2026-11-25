@@ -1,0 +1,68 @@
+// Built as part of the host app: the app's root project provides the Android, Kotlin and React Native
+// Gradle plugins.
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+apply plugin: "com.facebook.react"
+
+def safeExtGet(prop, fallback) {
+    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+// The Spotflow gateway AAR this module wraps. `npm run bundle-android` copies it, with its POM, into
+// android/maven; the version must match spotflowVersion in the gateway's gradle.properties.
+def spotflowGatewayVersion = "0.3.1"
+
+android {
+    namespace "io.spotflow.reactnative"
+    compileSdk safeExtGet("compileSdkVersion", 35)
+
+    defaultConfig {
+        // The gateway's minimum. A host app on a lower minSdk fails the manifest merge: raise it to 26.
+        minSdk 26
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+// The app resolves this module's dependencies with its own repositories, so the bundled gateway is
+// offered to every project of the build, for the io.spotflow group only.
+def bundledRepository = file("maven")
+rootProject.allprojects { p ->
+    p.repositories.maven {
+        name = "spotflowBundled"
+        url = bundledRepository
+        content { includeGroup("io.spotflow") }
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation "com.facebook.react:react-android"
+    implementation "io.spotflow:spotflow-ble-gateway:$spotflowGatewayVersion"
+
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0"
+}
+
+react {
+    jsRootDir = file("../src/")
+    libraryName = "SpotflowGatewaySpec"
+    codegenJavaPackageName = "io.spotflow.reactnative"
+}

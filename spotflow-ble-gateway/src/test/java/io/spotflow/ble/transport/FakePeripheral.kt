@@ -112,10 +112,6 @@ internal class FakePeripheral(address: String = "AA:BB:CC:DD:EE:FF") {
                 true
             }
         }
-        every { gatt.readRemoteRssi() } answers {
-            owed += { it.onReadRemoteRssi(gatt, -60, BluetoothGatt.GATT_SUCCESS) }
-            true
-        }
     }
 
     /** Delivers the oldest owed callback to [callback]; false if nothing is owed. */
@@ -127,12 +123,17 @@ internal class FakePeripheral(address: String = "AA:BB:CC:DD:EE:FF") {
 
     /** Delivers the result of reading [characteristic] to [callback], the way this Android version does. */
     @Suppress("DEPRECATION")
-    fun read(callback: BluetoothGattCallback, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+    fun read(
+        callback: BluetoothGattCallback,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        status: Int = BluetoothGatt.GATT_SUCCESS,
+    ) {
         if (modern) {
-            callback.onCharacteristicRead(gatt, characteristic, value, BluetoothGatt.GATT_SUCCESS)
+            callback.onCharacteristicRead(gatt, characteristic, value, status)
         } else {
             characteristic.value = value
-            callback.onCharacteristicRead(gatt, characteristic, BluetoothGatt.GATT_SUCCESS)
+            callback.onCharacteristicRead(gatt, characteristic, status)
         }
     }
 

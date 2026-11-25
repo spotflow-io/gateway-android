@@ -1,0 +1,38 @@
+{
+  "name": "@spotflow/react-native-ble-gateway",
+  "version": "0.1.0",
+  "description": "Relays Spotflow BLE devices to the Spotflow cloud from a React Native app that owns the BLE connections (Android).",
+  "license": "BUSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spotflow-io/gateway-android.git",
+    "directory": "react-native/packages/ble-gateway"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "src",
+    "!src/**/__tests__",
+    "android/build.gradle",
+    "android/src/main",
+    "android/maven",
+    "react-native.config.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "bundle-android": "node ../../scripts/bundle-android.mjs",
+    "prepack": "npm run bundle-android && npm run build"
+  },
+  "peerDependencies": {
+    "react-native": ">=0.81"
+  },
+  "codegenConfig": {
+    "name": "SpotflowGatewaySpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "android": {
+      "javaPackageName": "io.spotflow.reactnative"
+    }
+  }
+}

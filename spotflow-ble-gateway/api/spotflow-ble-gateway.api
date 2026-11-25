@@ -1,9 +1,77 @@
+public final class io/spotflow/ble/Attachment {
+	public final fun awaitEnd (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun detach ()V
+	public final fun getAddress ()Ljava/lang/String;
+	public final fun getState ()Lkotlinx/coroutines/flow/StateFlow;
+}
+
+public final class io/spotflow/ble/AttachmentEnd {
+	public final fun component1 ()Lio/spotflow/ble/AttachmentEnd$Reason;
+	public final fun component2 ()Lio/spotflow/ble/DeviceError;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getError ()Lio/spotflow/ble/DeviceError;
+	public final fun getReason ()Lio/spotflow/ble/AttachmentEnd$Reason;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/spotflow/ble/AttachmentEnd$Reason : java/lang/Enum {
+	public static final field DETACHED Lio/spotflow/ble/AttachmentEnd$Reason;
+	public static final field DISCONNECTED Lio/spotflow/ble/AttachmentEnd$Reason;
+	public static final field FAILED Lio/spotflow/ble/AttachmentEnd$Reason;
+	public static final field REPLACED Lio/spotflow/ble/AttachmentEnd$Reason;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lio/spotflow/ble/AttachmentEnd$Reason;
+	public static fun values ()[Lio/spotflow/ble/AttachmentEnd$Reason;
+}
+
+public abstract interface class io/spotflow/ble/AttachmentState {
+}
+
+public final class io/spotflow/ble/AttachmentState$Ended : io/spotflow/ble/AttachmentState {
+	public final fun component1 ()Lio/spotflow/ble/AttachmentEnd;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getResult ()Lio/spotflow/ble/AttachmentEnd;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/spotflow/ble/AttachmentState$Ready : io/spotflow/ble/AttachmentState {
+	public final fun component1 ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDeviceId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/spotflow/ble/AttachmentState$Starting : io/spotflow/ble/AttachmentState {
+	public static final field INSTANCE Lio/spotflow/ble/AttachmentState$Starting;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class io/spotflow/ble/BleLink {
+	public abstract fun awaitDisconnect (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun disableNotifications (Lio/spotflow/ble/GattRef;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun enableNotifications (Lio/spotflow/ble/GattRef;Lio/spotflow/ble/NotificationListener;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun getAddress ()Ljava/lang/String;
+	public abstract fun getMaxWritePayloadBytes ()I
+	public abstract fun read (Lio/spotflow/ble/GattRef;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun writeWithoutResponse (Lio/spotflow/ble/GattRef;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public class io/spotflow/ble/BleLinkException : java/io/IOException {
+	public fun <init> (Ljava/lang/String;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Integer;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Throwable;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/Integer;Ljava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getGattStatus ()Ljava/lang/Integer;
+}
+
 public final class io/spotflow/ble/DeviceError {
-	public fun <init> (Lio/spotflow/ble/DeviceError$Kind;Ljava/lang/String;)V
 	public final fun component1 ()Lio/spotflow/ble/DeviceError$Kind;
 	public final fun component2 ()Ljava/lang/String;
-	public final fun copy (Lio/spotflow/ble/DeviceError$Kind;Ljava/lang/String;)Lio/spotflow/ble/DeviceError;
-	public static synthetic fun copy$default (Lio/spotflow/ble/DeviceError;Lio/spotflow/ble/DeviceError$Kind;Ljava/lang/String;ILjava/lang/Object;)Lio/spotflow/ble/DeviceError;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getKind ()Lio/spotflow/ble/DeviceError$Kind;
 	public final fun getMessage ()Ljava/lang/String;
@@ -15,140 +83,92 @@ public final class io/spotflow/ble/DeviceError$Kind : java/lang/Enum {
 	public static final field AUTH_REJECTED Lio/spotflow/ble/DeviceError$Kind;
 	public static final field BLUETOOTH Lio/spotflow/ble/DeviceError$Kind;
 	public static final field CLOUD_UNREACHABLE Lio/spotflow/ble/DeviceError$Kind;
+	public static final field DEVICE_INGEST_KEY Lio/spotflow/ble/DeviceError$Kind;
 	public static final field DUPLICATE_DEVICE Lio/spotflow/ble/DeviceError$Kind;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lio/spotflow/ble/DeviceError$Kind;
 	public static fun values ()[Lio/spotflow/ble/DeviceError$Kind;
 }
 
-public abstract interface class io/spotflow/ble/DeviceFilter {
-	public static final field AcceptAll Lio/spotflow/ble/DeviceFilter;
-	public static final field Companion Lio/spotflow/ble/DeviceFilter$Companion;
-	public abstract fun accept (Ljava/lang/String;Ljava/lang/String;)Z
-}
-
-public final class io/spotflow/ble/DeviceFilter$Companion {
-}
-
-public final class io/spotflow/ble/GatewayDeviceState {
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;Lio/spotflow/ble/transport/ConnectionState;ZJJLjava/lang/Integer;JJJLio/spotflow/ble/DeviceError;ZLio/spotflow/ble/OtaTransfer;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Lio/spotflow/ble/transport/ConnectionState;ZJJLjava/lang/Integer;JJJLio/spotflow/ble/DeviceError;ZLio/spotflow/ble/OtaTransfer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()Ljava/lang/String;
-	public final fun component10 ()J
-	public final fun component11 ()Lio/spotflow/ble/DeviceError;
-	public final fun component12 ()Z
-	public final fun component13 ()Lio/spotflow/ble/OtaTransfer;
-	public final fun component2 ()Ljava/lang/String;
-	public final fun component3 ()Lio/spotflow/ble/transport/ConnectionState;
-	public final fun component4 ()Z
-	public final fun component5 ()J
-	public final fun component6 ()J
-	public final fun component7 ()Ljava/lang/Integer;
-	public final fun component8 ()J
-	public final fun component9 ()J
-	public final fun copy (Ljava/lang/String;Ljava/lang/String;Lio/spotflow/ble/transport/ConnectionState;ZJJLjava/lang/Integer;JJJLio/spotflow/ble/DeviceError;ZLio/spotflow/ble/OtaTransfer;)Lio/spotflow/ble/GatewayDeviceState;
-	public static synthetic fun copy$default (Lio/spotflow/ble/GatewayDeviceState;Ljava/lang/String;Ljava/lang/String;Lio/spotflow/ble/transport/ConnectionState;ZJJLjava/lang/Integer;JJJLio/spotflow/ble/DeviceError;ZLio/spotflow/ble/OtaTransfer;ILjava/lang/Object;)Lio/spotflow/ble/GatewayDeviceState;
+public final class io/spotflow/ble/GatewayOptions {
+	public static final field Companion Lio/spotflow/ble/GatewayOptions$Companion;
+	public static final field DEFAULT Lio/spotflow/ble/GatewayOptions;
+	public final fun copy (Lkotlin/jvm/functions/Function1;)Lio/spotflow/ble/GatewayOptions;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getAddress ()Ljava/lang/String;
-	public final fun getBle ()Lio/spotflow/ble/transport/ConnectionState;
-	public final fun getCloudConnected ()Z
-	public final fun getDeviceId ()Ljava/lang/String;
-	public final fun getDiskBytes ()J
-	public final fun getError ()Lio/spotflow/ble/DeviceError;
-	public final fun getForwarded ()J
+	public final fun getEndpoint ()Lio/spotflow/ble/cloud/CloudEndpoint;
+	public final fun getFlashBufferBytes ()J
 	public final fun getOtaEnabled ()Z
-	public final fun getOtaTransfer ()Lio/spotflow/ble/OtaTransfer;
-	public final fun getPendingMessages ()J
-	public final fun getRamBytes ()J
-	public final fun getReceived ()J
-	public final fun getRssi ()Ljava/lang/Integer;
+	public final fun getOtaMaxArtifactBytes ()J
+	public final fun getRamBufferBytes ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class io/spotflow/ble/GatewayStatus {
+public final class io/spotflow/ble/GatewayOptions$Builder {
 	public fun <init> ()V
-	public fun <init> (Lio/spotflow/ble/ScanState;Ljava/lang/String;ZZ)V
-	public synthetic fun <init> (Lio/spotflow/ble/ScanState;Ljava/lang/String;ZZILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()Lio/spotflow/ble/ScanState;
-	public final fun component2 ()Ljava/lang/String;
-	public final fun component3 ()Z
-	public final fun component4 ()Z
-	public final fun copy (Lio/spotflow/ble/ScanState;Ljava/lang/String;ZZ)Lio/spotflow/ble/GatewayStatus;
-	public static synthetic fun copy$default (Lio/spotflow/ble/GatewayStatus;Lio/spotflow/ble/ScanState;Ljava/lang/String;ZZILjava/lang/Object;)Lio/spotflow/ble/GatewayStatus;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getOnline ()Z
-	public final fun getScan ()Lio/spotflow/ble/ScanState;
-	public final fun getScanError ()Ljava/lang/String;
-	public final fun getStorageAvailable ()Z
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
+	public final fun build ()Lio/spotflow/ble/GatewayOptions;
+	public final fun getEndpoint ()Lio/spotflow/ble/cloud/CloudEndpoint;
+	public final fun getFlashBufferBytes ()J
+	public final fun getOtaEnabled ()Z
+	public final fun getOtaMaxArtifactBytes ()J
+	public final fun getRamBufferBytes ()J
+	public final fun setEndpoint (Lio/spotflow/ble/cloud/CloudEndpoint;)V
+	public final fun setFlashBufferBytes (J)V
+	public final fun setOtaEnabled (Z)V
+	public final fun setOtaMaxArtifactBytes (J)V
+	public final fun setRamBufferBytes (J)V
 }
 
-public final class io/spotflow/ble/GattAttachment {
-	public final fun detach ()V
-	public final fun getGattCallback ()Landroid/bluetooth/BluetoothGattCallback;
+public final class io/spotflow/ble/GatewayOptions$Companion {
+}
+
+public final class io/spotflow/ble/GatewayOptionsKt {
+	public static final fun GatewayOptions (Lkotlin/jvm/functions/Function1;)Lio/spotflow/ble/GatewayOptions;
+}
+
+public final class io/spotflow/ble/GattBridge {
+	public fun <init> ()V
+	public final fun getCallback ()Landroid/bluetooth/BluetoothGattCallback;
+	public final fun link (Landroid/bluetooth/BluetoothGatt;)Lio/spotflow/ble/BleLink;
+	public final fun link (Landroid/bluetooth/BluetoothGatt;Ljava/lang/Integer;)Lio/spotflow/ble/BleLink;
+	public static synthetic fun link$default (Lio/spotflow/ble/GattBridge;Landroid/bluetooth/BluetoothGatt;Ljava/lang/Integer;ILjava/lang/Object;)Lio/spotflow/ble/BleLink;
 	public final fun runExclusive (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun start (Landroid/bluetooth/BluetoothGatt;)V
 }
 
-public final class io/spotflow/ble/OtaConfig {
-	public fun <init> ()V
-	public fun <init> (ZJ)V
-	public synthetic fun <init> (ZJILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()Z
-	public final fun component2 ()J
-	public final fun copy (ZJ)Lio/spotflow/ble/OtaConfig;
-	public static synthetic fun copy$default (Lio/spotflow/ble/OtaConfig;ZJILjava/lang/Object;)Lio/spotflow/ble/OtaConfig;
+public final class io/spotflow/ble/GattRef {
+	public fun <init> (Ljava/util/UUID;Ljava/util/UUID;)V
+	public final fun component1 ()Ljava/util/UUID;
+	public final fun component2 ()Ljava/util/UUID;
+	public final fun copy (Ljava/util/UUID;Ljava/util/UUID;)Lio/spotflow/ble/GattRef;
+	public static synthetic fun copy$default (Lio/spotflow/ble/GattRef;Ljava/util/UUID;Ljava/util/UUID;ILjava/lang/Object;)Lio/spotflow/ble/GattRef;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getEnabled ()Z
-	public final fun getMaxArtifactBytes ()J
+	public final fun getCharacteristic ()Ljava/util/UUID;
+	public final fun getService ()Ljava/util/UUID;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class io/spotflow/ble/OtaTransfer {
-	public fun <init> (Ljava/lang/Long;J)V
-	public final fun component1 ()Ljava/lang/Long;
-	public final fun component2 ()J
-	public final fun copy (Ljava/lang/Long;J)Lio/spotflow/ble/OtaTransfer;
-	public static synthetic fun copy$default (Lio/spotflow/ble/OtaTransfer;Ljava/lang/Long;JILjava/lang/Object;)Lio/spotflow/ble/OtaTransfer;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getDeliveredBytes ()J
-	public final fun getSizeBytes ()Ljava/lang/Long;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class io/spotflow/ble/ScanState : java/lang/Enum {
-	public static final field RETRYING Lio/spotflow/ble/ScanState;
-	public static final field SCANNING Lio/spotflow/ble/ScanState;
-	public static final field STOPPED Lio/spotflow/ble/ScanState;
-	public static final field WAITING_FOR_BLUETOOTH Lio/spotflow/ble/ScanState;
-	public static fun getEntries ()Lkotlin/enums/EnumEntries;
-	public static fun valueOf (Ljava/lang/String;)Lio/spotflow/ble/ScanState;
-	public static fun values ()[Lio/spotflow/ble/ScanState;
+public abstract interface class io/spotflow/ble/NotificationListener {
+	public abstract fun onError (Lio/spotflow/ble/BleLinkException;)V
+	public abstract fun onValue ([B)V
 }
 
 public final class io/spotflow/ble/SpotflowGateway {
 	public static final field Companion Lio/spotflow/ble/SpotflowGateway$Companion;
-	public static final field DEFAULT_MTU I
-	public fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;Lio/spotflow/ble/DeviceFilter;Lio/spotflow/ble/cloud/MqttConfig;ILio/spotflow/ble/OtaConfig;)V
-	public synthetic fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;Lio/spotflow/ble/DeviceFilter;Lio/spotflow/ble/cloud/MqttConfig;ILio/spotflow/ble/OtaConfig;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun detach (Ljava/lang/String;)V
-	public final fun getBufferUsage ()Lkotlinx/coroutines/flow/StateFlow;
-	public final fun getDevices ()Lkotlinx/coroutines/flow/StateFlow;
-	public final fun getStatus ()Lkotlinx/coroutines/flow/StateFlow;
-	public final fun isBluetoothEnabled ()Z
-	public final fun newAttachment (Z)Lio/spotflow/ble/GattAttachment;
-	public static synthetic fun newAttachment$default (Lio/spotflow/ble/SpotflowGateway;ZILjava/lang/Object;)Lio/spotflow/ble/GattAttachment;
-	public final fun retryStopped ()V
+	public fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;)V
+	public fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;Lio/spotflow/ble/GatewayOptions;)V
+	public synthetic fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;Lio/spotflow/ble/GatewayOptions;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun attach (Lio/spotflow/ble/BleLink;)Lio/spotflow/ble/Attachment;
+	public final fun diagnosticsSnapshot ()Lio/spotflow/ble/diagnostics/GatewayReport;
 	public final fun shutdown ()V
-	public final fun startScanning ()V
-	public final fun stopScanning ()V
+	public static final fun usingDeviceIngestKeys (Landroid/content/Context;)Lio/spotflow/ble/SpotflowGateway;
+	public static final fun usingDeviceIngestKeys (Landroid/content/Context;Lio/spotflow/ble/GatewayOptions;)Lio/spotflow/ble/SpotflowGateway;
 }
 
 public final class io/spotflow/ble/SpotflowGateway$Companion {
+	public final fun usingDeviceIngestKeys (Landroid/content/Context;)Lio/spotflow/ble/SpotflowGateway;
+	public final fun usingDeviceIngestKeys (Landroid/content/Context;Lio/spotflow/ble/GatewayOptions;)Lio/spotflow/ble/SpotflowGateway;
+	public static synthetic fun usingDeviceIngestKeys$default (Lio/spotflow/ble/SpotflowGateway$Companion;Landroid/content/Context;Lio/spotflow/ble/GatewayOptions;ILjava/lang/Object;)Lio/spotflow/ble/SpotflowGateway;
 }
 
 public final class io/spotflow/ble/SpotflowLog {
@@ -163,17 +183,40 @@ public abstract interface class io/spotflow/ble/SpotflowLogger {
 	public abstract fun log (ILjava/lang/String;Ljava/lang/String;Ljava/lang/Throwable;)V
 }
 
-public final class io/spotflow/ble/cloud/BufferUsage {
-	public fun <init> ()V
-	public fun <init> (JJJJ)V
-	public synthetic fun <init> (JJJJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+public final class io/spotflow/ble/cloud/CloudEndpoint {
+	public static final field Companion Lio/spotflow/ble/cloud/CloudEndpoint$Companion;
+	public static final field DEFAULT_PORT I
+	public static final field PRODUCTION Lio/spotflow/ble/cloud/CloudEndpoint;
+	public fun <init> (Ljava/lang/String;)V
+	public fun <init> (Ljava/lang/String;I)V
+	public synthetic fun <init> (Ljava/lang/String;IILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getHost ()Ljava/lang/String;
+	public final fun getPort ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/spotflow/ble/cloud/CloudEndpoint$Companion {
+}
+
+public abstract interface class io/spotflow/ble/cloud/CredentialsProvider {
+	public abstract fun ingestKey (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class io/spotflow/ble/cloud/StaticIngestKey : io/spotflow/ble/cloud/CredentialsProvider {
+	public fun <init> (Ljava/lang/String;)V
+	public fun ingestKey (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class io/spotflow/ble/diagnostics/BufferUsage {
 	public final fun component1 ()J
 	public final fun component2 ()J
 	public final fun component3 ()J
 	public final fun component4 ()J
-	public final fun copy (JJJJ)Lio/spotflow/ble/cloud/BufferUsage;
-	public static synthetic fun copy$default (Lio/spotflow/ble/cloud/BufferUsage;JJJJILjava/lang/Object;)Lio/spotflow/ble/cloud/BufferUsage;
+	public final fun component5 ()Z
 	public fun equals (Ljava/lang/Object;)Z
+	public final fun getFlashAvailable ()Z
 	public final fun getFlashBytes ()J
 	public final fun getFlashMaxBytes ()J
 	public final fun getRamBytes ()J
@@ -182,87 +225,104 @@ public final class io/spotflow/ble/cloud/BufferUsage {
 	public fun toString ()Ljava/lang/String;
 }
 
-public abstract interface class io/spotflow/ble/cloud/CredentialsProvider {
-	public abstract fun ingestKey (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-}
-
-public final class io/spotflow/ble/cloud/MqttConfig {
-	public fun <init> ()V
-	public fun <init> (Ljava/lang/String;IZILio/spotflow/ble/cloud/PublishQos;Lio/spotflow/ble/cloud/SpotflowTopics;JJ)V
-	public synthetic fun <init> (Ljava/lang/String;IZILio/spotflow/ble/cloud/PublishQos;Lio/spotflow/ble/cloud/SpotflowTopics;JJILkotlin/jvm/internal/DefaultConstructorMarker;)V
+public final class io/spotflow/ble/diagnostics/DeviceReport {
 	public final fun component1 ()Ljava/lang/String;
-	public final fun component2 ()I
-	public final fun component3 ()Z
-	public final fun component4 ()I
-	public final fun component5 ()Lio/spotflow/ble/cloud/PublishQos;
-	public final fun component6 ()Lio/spotflow/ble/cloud/SpotflowTopics;
+	public final fun component10 ()Lio/spotflow/ble/DeviceError;
+	public final fun component11 ()Z
+	public final fun component12 ()Lio/spotflow/ble/diagnostics/FirmwareTransfer;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Lio/spotflow/ble/AttachmentState;
+	public final fun component4 ()Z
+	public final fun component5 ()J
+	public final fun component6 ()J
 	public final fun component7 ()J
 	public final fun component8 ()J
-	public final fun copy (Ljava/lang/String;IZILio/spotflow/ble/cloud/PublishQos;Lio/spotflow/ble/cloud/SpotflowTopics;JJ)Lio/spotflow/ble/cloud/MqttConfig;
-	public static synthetic fun copy$default (Lio/spotflow/ble/cloud/MqttConfig;Ljava/lang/String;IZILio/spotflow/ble/cloud/PublishQos;Lio/spotflow/ble/cloud/SpotflowTopics;JJILjava/lang/Object;)Lio/spotflow/ble/cloud/MqttConfig;
+	public final fun component9 ()J
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getBufferMaxBytes ()J
-	public final fun getHost ()Ljava/lang/String;
-	public final fun getKeepAliveSeconds ()I
-	public final fun getPort ()I
-	public final fun getQos ()Lio/spotflow/ble/cloud/PublishQos;
-	public final fun getRamBufferMaxBytes ()J
-	public final fun getTopics ()Lio/spotflow/ble/cloud/SpotflowTopics;
-	public final fun getUseTls ()Z
+	public final fun getActiveFirmwareTransfer ()Lio/spotflow/ble/diagnostics/FirmwareTransfer;
+	public final fun getAddress ()Ljava/lang/String;
+	public final fun getAttachmentState ()Lio/spotflow/ble/AttachmentState;
+	public final fun getCloudConnected ()Z
+	public final fun getCloudError ()Lio/spotflow/ble/DeviceError;
+	public final fun getCloudMessagesReceived ()J
+	public final fun getDeviceId ()Ljava/lang/String;
+	public final fun getFlashBytes ()J
+	public final fun getForwarded ()J
+	public final fun getOtaEnabled ()Z
+	public final fun getPendingMessages ()J
+	public final fun getRamBytes ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class io/spotflow/ble/cloud/PublishQos : java/lang/Enum {
-	public static final field AT_LEAST_ONCE Lio/spotflow/ble/cloud/PublishQos;
-	public static final field AT_MOST_ONCE Lio/spotflow/ble/cloud/PublishQos;
-	public static final field EXACTLY_ONCE Lio/spotflow/ble/cloud/PublishQos;
+public final class io/spotflow/ble/diagnostics/FirmwareTransfer {
+	public final fun component1 ()Ljava/lang/Long;
+	public final fun component2 ()J
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLastReadEndOffsetBytes ()J
+	public final fun getSizeBytes ()Ljava/lang/Long;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class io/spotflow/ble/diagnostics/GatewayReport {
+	public final fun component1 ()Ljava/util/List;
+	public final fun component2 ()Lio/spotflow/ble/diagnostics/BufferUsage;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getBufferUsage ()Lio/spotflow/ble/diagnostics/BufferUsage;
+	public final fun getDevices ()Ljava/util/List;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class io/spotflow/ble/managed/DeviceFilter {
+	public static final field AcceptAll Lio/spotflow/ble/managed/DeviceFilter;
+	public static final field Companion Lio/spotflow/ble/managed/DeviceFilter$Companion;
+	public abstract fun accept (Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class io/spotflow/ble/managed/DeviceFilter$Companion {
+}
+
+public final class io/spotflow/ble/managed/ManagedGateway {
+	public fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;Lio/spotflow/ble/managed/DeviceFilter;)V
+	public fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;Lio/spotflow/ble/managed/DeviceFilter;Lio/spotflow/ble/GatewayOptions;)V
+	public synthetic fun <init> (Landroid/content/Context;Lio/spotflow/ble/cloud/CredentialsProvider;Lio/spotflow/ble/managed/DeviceFilter;Lio/spotflow/ble/GatewayOptions;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun allowDevice (Ljava/lang/String;)V
+	public final fun attach (Lio/spotflow/ble/BleLink;)Lio/spotflow/ble/Attachment;
+	public final fun diagnosticsSnapshot ()Lio/spotflow/ble/diagnostics/GatewayReport;
+	public final fun getScanStatus ()Lkotlinx/coroutines/flow/StateFlow;
+	public final fun ignoreDevice (Ljava/lang/String;)V
+	public final fun isBluetoothEnabled ()Z
+	public final fun retry ()V
+	public final fun shutdown ()V
+	public final fun startScanning ()V
+	public final fun stopScanning ()V
+}
+
+public final class io/spotflow/ble/managed/ScanState : java/lang/Enum {
+	public static final field RETRYING Lio/spotflow/ble/managed/ScanState;
+	public static final field SCANNING Lio/spotflow/ble/managed/ScanState;
+	public static final field STOPPED Lio/spotflow/ble/managed/ScanState;
+	public static final field WAITING_FOR_BLUETOOTH Lio/spotflow/ble/managed/ScanState;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
-	public static fun valueOf (Ljava/lang/String;)Lio/spotflow/ble/cloud/PublishQos;
-	public static fun values ()[Lio/spotflow/ble/cloud/PublishQos;
+	public static fun valueOf (Ljava/lang/String;)Lio/spotflow/ble/managed/ScanState;
+	public static fun values ()[Lio/spotflow/ble/managed/ScanState;
 }
 
-public final class io/spotflow/ble/cloud/SpotflowTopics {
-	public fun <init> ()V
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()Ljava/lang/String;
+public final class io/spotflow/ble/managed/ScanStatus {
+	public final fun component1 ()Lio/spotflow/ble/managed/ScanState;
 	public final fun component2 ()Ljava/lang/String;
-	public final fun component3 ()Ljava/lang/String;
-	public final fun component4 ()Ljava/lang/String;
-	public final fun component5 ()Ljava/lang/String;
-	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lio/spotflow/ble/cloud/SpotflowTopics;
-	public static synthetic fun copy$default (Lio/spotflow/ble/cloud/SpotflowTopics;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lio/spotflow/ble/cloud/SpotflowTopics;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getDesiredConfiguration ()Ljava/lang/String;
-	public final fun getIngest ()Ljava/lang/String;
-	public final fun getOtaCommands ()Ljava/lang/String;
-	public final fun getOtaResults ()Ljava/lang/String;
-	public final fun getReportedConfiguration ()Ljava/lang/String;
+	public final fun getError ()Ljava/lang/String;
+	public final fun getState ()Lio/spotflow/ble/managed/ScanState;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class io/spotflow/ble/cloud/StaticIngestKey : io/spotflow/ble/cloud/CredentialsProvider {
-	public fun <init> (Ljava/lang/String;)V
-	public fun ingestKey (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-}
-
-public final class io/spotflow/ble/protocol/GattProfile {
-	public static final field INSTANCE Lio/spotflow/ble/protocol/GattProfile;
-	public final fun getCAPABILITIES ()Ljava/util/UUID;
-	public final fun getCCCD ()Ljava/util/UUID;
-	public final fun getDEVICE_ID ()Ljava/util/UUID;
-	public final fun getRX_STREAM ()Ljava/util/UUID;
-	public final fun getSERVICE ()Ljava/util/UUID;
-	public final fun getSESSION_METADATA ()Ljava/util/UUID;
-	public final fun getTX_STREAM ()Ljava/util/UUID;
-	public final fun name (Ljava/util/UUID;)Ljava/lang/String;
-}
-
-public final class io/spotflow/ble/service/SpotflowGatewayService : android/app/Service {
+public final class io/spotflow/ble/managed/SpotflowGatewayService : android/app/Service {
 	public static final field CHANNEL_ID Ljava/lang/String;
-	public static final field Companion Lio/spotflow/ble/service/SpotflowGatewayService$Companion;
+	public static final field Companion Lio/spotflow/ble/managed/SpotflowGatewayService$Companion;
 	public fun <init> ()V
 	public fun onBind (Landroid/content/Intent;)Landroid/os/IBinder;
 	public fun onCreate ()V
@@ -270,8 +330,8 @@ public final class io/spotflow/ble/service/SpotflowGatewayService : android/app/
 	public fun onStartCommand (Landroid/content/Intent;II)I
 }
 
-public final class io/spotflow/ble/service/SpotflowGatewayService$Companion {
-	public final fun getGateway ()Lio/spotflow/ble/SpotflowGateway;
+public final class io/spotflow/ble/managed/SpotflowGatewayService$Companion {
+	public final fun getGateway ()Lio/spotflow/ble/managed/ManagedGateway;
 	public final fun getGatewayFactory ()Lkotlin/jvm/functions/Function1;
 	public final fun getGatewayFlow ()Lkotlinx/coroutines/flow/StateFlow;
 	public final fun getNotificationProvider ()Lkotlin/jvm/functions/Function1;
@@ -284,14 +344,18 @@ public final class io/spotflow/ble/service/SpotflowGatewayService$Companion {
 	public final fun stop (Landroid/content/Context;)V
 }
 
-public final class io/spotflow/ble/transport/ConnectionState : java/lang/Enum {
-	public static final field CONNECTING Lio/spotflow/ble/transport/ConnectionState;
-	public static final field DISCONNECTED Lio/spotflow/ble/transport/ConnectionState;
-	public static final field FAILED Lio/spotflow/ble/transport/ConnectionState;
-	public static final field PREPARING Lio/spotflow/ble/transport/ConnectionState;
-	public static final field READY Lio/spotflow/ble/transport/ConnectionState;
-	public static fun getEntries ()Lkotlin/enums/EnumEntries;
-	public static fun valueOf (Ljava/lang/String;)Lio/spotflow/ble/transport/ConnectionState;
-	public static fun values ()[Lio/spotflow/ble/transport/ConnectionState;
+public final class io/spotflow/ble/protocol/GattProfile {
+	public static final field INSTANCE Lio/spotflow/ble/protocol/GattProfile;
+	public final fun advertisesService (Landroid/bluetooth/le/ScanResult;)Z
+	public final fun getCAPABILITIES ()Ljava/util/UUID;
+	public final fun getCCCD ()Ljava/util/UUID;
+	public final fun getDEVICE_ID ()Ljava/util/UUID;
+	public final fun getINGEST_KEY ()Ljava/util/UUID;
+	public final fun getRX_STREAM ()Ljava/util/UUID;
+	public final fun getSERVICE ()Ljava/util/UUID;
+	public final fun getSESSION_METADATA ()Ljava/util/UUID;
+	public final fun getTX_STREAM ()Ljava/util/UUID;
+	public final fun name (Ljava/util/UUID;)Ljava/lang/String;
+	public final fun readDeviceId (Lio/spotflow/ble/BleLink;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 

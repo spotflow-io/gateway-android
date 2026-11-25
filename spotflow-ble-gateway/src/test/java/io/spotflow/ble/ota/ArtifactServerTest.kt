@@ -1,6 +1,6 @@
 package io.spotflow.ble.ota
 
-import io.spotflow.ble.OtaTransfer
+import io.spotflow.ble.diagnostics.FirmwareTransfer
 import io.spotflow.ble.protocol.ArtifactProtocol
 import io.spotflow.ble.protocol.ArtifactProtocol.Status
 import kotlinx.coroutines.CompletableDeferred
@@ -57,7 +57,7 @@ class ArtifactServerTest {
 
     private val downloader = FakeDownloader()
     private val sent = mutableListOf<ByteArray>()
-    private val progress = mutableListOf<OtaTransfer?>()
+    private val progress = mutableListOf<FirmwareTransfer?>()
     private lateinit var dir: File
 
     private fun TestScope.cache(maxEntries: Int = 4, maxBytes: Long = 1_000_000) =
@@ -114,7 +114,7 @@ class ArtifactServerTest {
             assertEquals(4096L, u32)
             assertArrayEquals(firmware.copyOfRange(4096, 8192), rest.copyOfRange(4, rest.size))
         }
-        assertEquals(OtaTransfer(firmware.size.toLong(), 8192), progress.last())
+        assertEquals(FirmwareTransfer(firmware.size.toLong(), 8192), progress.last())
 
         server.handle(this, close(transfer = 5, request = 3, consumed = firmware.size)); runCurrent()
         assertEquals(0x83 to 0, lastResponse().op to lastResponse().status)
@@ -129,7 +129,7 @@ class ArtifactServerTest {
         val server = server(cache())
         repeat(5) { server.handle(this, open(transfer = 5, request = 1)); runCurrent() }
         assertTrue(sent.isEmpty())
-        assertEquals(OtaTransfer(null, 0), progress.last())
+        assertEquals(FirmwareTransfer(null, 0), progress.last())
 
         downloader.gate!!.complete(Unit); runCurrent()
         assertEquals(1, sent.size)

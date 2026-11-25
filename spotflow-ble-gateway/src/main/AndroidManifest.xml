@@ -28,7 +28,7 @@
 
     <application>
         <service
-            android:name="io.spotflow.ble.service.SpotflowGatewayService"
+            android:name="io.spotflow.ble.managed.SpotflowGatewayService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
     </application>
