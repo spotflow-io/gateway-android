@@ -17,10 +17,10 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "npm run build && node ../../scripts/copy-license.mjs"
+    "prepack": "pnpm build && node ../../scripts/copy-license.mjs"
   },
   "peerDependencies": {
-    "@spotflow/react-native-ble-gateway": "^0.1.0",
+    "@spotflow/react-native-ble-gateway": "workspace:^",
     "react-native-ble-manager": ">=12.6.1 <14"
   }
 }

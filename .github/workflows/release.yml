@@ -75,15 +75,22 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      # The bridge's prepack builds the release AAR and publishes it to build/maven-repo before
+      - name: Set up pnpm
+        run: &setup_pnpm |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/pnpm.tar.gz" https://github.com/pnpm/pnpm/releases/download/v11.27.0/pnpm-linux-x64.tar.gz
+          echo "14ed04e631e4563abf3570dda1a365316683149a482b741a2db37e495f6b9cdb  $RUNNER_TEMP/pnpm.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/pnpm-bin"
+          tar -xzf "$RUNNER_TEMP/pnpm.tar.gz" -C "$RUNNER_TEMP/pnpm-bin"
+          echo "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
+
+    # The bridge's prepack builds the release AAR and publishes it to build/maven-repo before
       # copying it into the npm package. The GitHub Release uses that same AAR and repository.
       - name: Test and pack both npm workspaces
         working-directory: react-native
         run: |
-          npm ci --ignore-scripts
-          npm run typecheck
-          npm test
-          mkdir -p ../dist
+          pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+          pnpm typecheck
+          pnpm test
           bash scripts/pack-release.sh ../dist
 
       # The Maven repository is the way to consume the library: its POM carries the dependencies. The bare
@@ -128,6 +135,7 @@ jobs:
   npm-release:
     name: Publish to npm
     needs: github-release
+    if: github.repository == 'spotflow-io/gateway-android'
     runs-on: ubuntu-latest
     # npm trusted publishing: the `npm-release` environment accepts only runs for `v*` tags.
     environment: npm-release
@@ -145,10 +153,12 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      # No checkout, npm install, or lifecycle scripts in the job that holds publishing permissions.
+      - name: Set up pnpm
+        run: *setup_pnpm
+
+      # No checkout, dependency install, or lifecycle scripts in the publishing job.
       - name: Publish the packed bridge, then the BLE Manager driver
         run: |
           shopt -s nullglob
@@ -158,5 +168,5 @@ jobs:
             echo '::error::Expected one tarball for each npm package'
             exit 1
           fi
-          npm publish "${bridge[0]}" --access public --ignore-scripts
-          npm publish "${driver[0]}" --access public --ignore-scripts
+          pnpm publish "${bridge[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
+          pnpm publish "${driver[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --ignore-pnpmfile --no-git-checks

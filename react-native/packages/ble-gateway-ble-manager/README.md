@@ -8,7 +8,7 @@ library. Android only.
 ## Install
 
 ```sh
-npm install @spotflow/react-native-ble-gateway @spotflow/react-native-ble-gateway-ble-manager
+pnpm add @spotflow/react-native-ble-gateway @spotflow/react-native-ble-gateway-ble-manager
 ```
 
 Requires `react-native-ble-manager` 12.6.1 or newer. Earlier versions log every written value at debug

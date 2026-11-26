@@ -8,23 +8,24 @@
 
 ## Development
 
-Needs Node 22.18 or newer; bundling the AAR also needs a JDK 17 and the Android SDK.
+Needs Node 22.18 or newer and the pnpm version pinned in `package.json`. Bundling the AAR also needs
+JDK 17 and the Android SDK. CI installs from `pnpm-lock.yaml` without running dependency scripts.
+The workspace applies the platform frontend's one-week release delay and trust downgrade checks.
 
 ```sh
-npm install
-npm run typecheck
-npm test               # runs the TypeScript sources with Node's test runner
-npm run build          # lib/ of both packages
-npm run bundle-android # builds the gateway AAR into packages/ble-gateway/android/maven
+pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+pnpm typecheck      # checks both workspaces
+pnpm test           # runs the TypeScript sources with Node's test runner
+pnpm build          # builds lib/ in both packages
+pnpm bundle-android # builds the gateway AAR into packages/ble-gateway/android/maven
 ```
 
-`npm pack` in `packages/ble-gateway` bundles the AAR and builds `lib/` first. The gateway version the
+`pnpm pack` in `packages/ble-gateway` bundles the AAR and builds `lib/` first. The gateway version the
 module expects is `spotflowGatewayVersion` in `packages/ble-gateway/android/build.gradle`; the bundle
 script refuses to run if it differs from `spotflowVersion` in the root `gradle.properties`.
 
-To try the packages in an app before they are published, run `npm run build` and
-`npm run bundle-android`, then install both package directories into the app (`npm install
-<path>/packages/ble-gateway <path>/packages/ble-gateway-ble-manager`) and rebuild it.
+To try unpublished packages, run `bash scripts/pack-release.sh <destination>`, then install the two
+tarballs in the app with `pnpm add <bridge.tgz> <driver.tgz>` and rebuild it.
 
 The Kotlin module (`packages/ble-gateway/android`) builds only inside a React Native app, which
 provides the React Native Gradle plugin and codegen. Its unit tests run there too, for example:
@@ -45,7 +46,7 @@ built and tested.
 
 |                 | Alpha                                         | Stable                         |
 | --------------- | --------------------------------------------- | ------------------------------ |
-| Built by        | CI, for every pull request                    | `release.yml`, for a `v*` tag  |
+| Built by        | CI, for same-repository pull requests          | `release.yml`, for a `v*` tag  |
 | Published by    | **Publish npm alpha**, run from `main`        | `release.yml`, automatically   |
 | npm dist-tag    | `alpha`                                       | `latest`                       |
 | Version         | `0.1.0-alpha.<pr>.<ci-run>.<attempt>`         | `0.1.0`                        |
@@ -57,28 +58,29 @@ built and tested.
 2. Run **Actions → Publish npm alpha → Run workflow** on `main` with the PR number, or:
 
    ```sh
-   gh workflow run publish-alpha.yml --repo spotflow-io/gateway-android -f pr=<number>
+   gh workflow run publish-alpha.yml --repo spotflow-io/gateway-android --ref main -f pr=<number>
    ```
 
    It publishes the tarballs of the PR head's latest successful CI run. The run summary has the
-   `npm install` command. In apps, pin the exact versions, not the `alpha` tag.
+   `pnpm add` command. In apps, pin the exact versions, not the `alpha` tag.
 
 Every CI run has its own version, and the Android gateway inside gets one to match (for example
 `0.4.0-alpha.8.57.1`). The driver's peer dependency pins the exact bridge alpha. To publish a newer
-alpha, push to the PR, or re-run its CI if publishing failed partway: versions can't be published twice.
+alpha, push to the PR or re-run all jobs in its CI workflow. Versions can't be published twice.
 
 ### Stable releases
 
 1. Update `spotflowVersion` in the root `gradle.properties` and `spotflowGatewayVersion` in
    `packages/ble-gateway/android/build.gradle` together. Bump the npm package versions in their
-   manifests when their contents change, and refresh the lockfile (`npm install --package-lock-only
-   --ignore-scripts`). Check that the driver's peer range accepts the bridge version.
+   manifests when their contents change, and refresh the lockfile (`pnpm install --lockfile-only
+   --ignore-scripts --ignore-pnpmfile`). The driver's workspace peer range is converted to a registry
+   semver range when packed.
 2. Merge, then tag the merged commit `v<spotflowVersion>`. `release.yml` tests and packs both packages,
    attaches the tarballs to the GitHub Release, and publishes them to npm, bridge first.
 
 npm versions can't be published twice. If the npm job published the bridge but not the driver, a
 re-run fails on the bridge: publish the driver's tarball from the GitHub Release by hand instead
-(`npm publish <tarball> --access public --ignore-scripts`).
+(`pnpm publish <tarball> --tag latest --access public --ignore-scripts --ignore-pnpmfile --no-git-checks`).
 
 ### One-time setup
 
@@ -93,12 +95,12 @@ re-run fails on the bridge: publish the driver's tarball from the GitHub Release
 
    ```sh
    gh run download <ci-run-id> --repo spotflow-io/gateway-android --name npm-alpha --dir npm-alpha
-   npm publish npm-alpha/spotflow-react-native-ble-gateway-<version>.tgz --tag alpha --access public --ignore-scripts
-   npm publish npm-alpha/spotflow-react-native-ble-gateway-ble-manager-<version>.tgz --tag alpha --access public --ignore-scripts
+   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-<version>.tgz --tag alpha --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
+   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-ble-manager-<version>.tgz --tag alpha --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
    ```
 
 3. **npm**: in each package's **Settings → Trusted publishing**, add two GitHub Actions publishers for
-   `spotflow-io/gateway-android` that may run `npm publish`: workflow `publish-alpha.yml` with
+   `spotflow-io/gateway-android` and allow direct publishing in npm's settings: workflow `publish-alpha.yml` with
    environment `npm-alpha`, and workflow `release.yml` with environment `npm-release`. A new
    publisher expires unless it publishes within two days, so add each one shortly before its first run.
 4. **npm**: once both publishers have worked, set each package's **Publishing access** to require 2FA

@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+
+minimumReleaseAge: 10080 # One week, matching the Observability Platform frontend.
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  - undici-types@6.21.0 # Existing lockfile pin, also excepted in the platform frontend.
+blockExoticSubdeps: true
+allowBuilds:
+  core-js: false # Not needed by our tooling or builds.

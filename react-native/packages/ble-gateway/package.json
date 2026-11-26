@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "bundle-android": "node ../../scripts/bundle-android.mjs",
-    "prepack": "npm run bundle-android && npm run build && node ../../scripts/copy-license.mjs"
+    "prepack": "pnpm bundle-android && pnpm build && node ../../scripts/copy-license.mjs"
   },
   "peerDependencies": {
     "react-native": ">=0.81"

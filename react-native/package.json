@@ -1,12 +1,9 @@
 {
   "name": "spotflow-react-native-workspace",
   "private": true,
-  "workspaces": [
-    "packages/ble-gateway",
-    "packages/ble-gateway-ble-manager"
-  ],
+  "packageManager": "pnpm@11.27.0",
   "scripts": {
-    "build": "npm run build -w @spotflow/react-native-ble-gateway && npm run build -w @spotflow/react-native-ble-gateway-ble-manager",
+    "build": "pnpm --filter @spotflow/react-native-ble-gateway build && pnpm --filter @spotflow/react-native-ble-gateway-ble-manager build",
     "bundle-android": "node scripts/bundle-android.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"packages/*/src/__tests__/*.test.ts\" \"scripts/*.test.mjs\""
@@ -16,7 +13,7 @@
     "@types/react": "~19.1.10",
     "react": "19.1.0",
     "react-native": "0.81.5",
-    "react-native-ble-manager": "^13.0.2",
+    "react-native-ble-manager": "13.0.1",
     "typescript": "~5.9.3"
   }
 }
