@@ -10,7 +10,7 @@ def safeExtGet(prop, fallback) {
 
 // The Spotflow gateway AAR this module wraps. `npm run bundle-android` copies it, with its POM, into
 // android/maven; the version must match spotflowVersion in the gateway's gradle.properties.
-def spotflowGatewayVersion = "0.3.1"
+def spotflowGatewayVersion = "0.4.0"
 
 android {
     namespace "io.spotflow.reactnative"

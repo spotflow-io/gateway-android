@@ -6,18 +6,22 @@ on:
       - 'v*'
 
 permissions:
-  contents: write # required to create the GitHub Release
+  contents: read
 
 jobs:
-  release:
-    name: Build & publish release
+  build:
+    name: Test & pack release
     runs-on: ubuntu-latest
     steps:
       # Third-party actions are pinned to a commit; see ci.yml.
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Check the release commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
 
       # The version lives in gradle.properties (it names the APK's version and the library's). A tag that
       # says something else would publish artifacts under the wrong name, so stop before building.
@@ -42,12 +46,14 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          cache-disabled: true
 
       - name: Unit tests and public API check
         run: ./gradlew :spotflow-ble-gateway:testDebugUnitTest :app:testDebugUnitTest :spotflow-ble-gateway:apiCheck --stacktrace
 
       # The signing key is given to this one step only; the decoded keystore is removed before it ends.
-      - name: Build the signed APK, the AAR and its Maven repository
+      - name: Build the signed demo APK
         env:
           SPOTFLOW_KEYSTORE_BASE64: ${{ secrets.SPOTFLOW_KEYSTORE_BASE64 }}
           SPOTFLOW_KEYSTORE_PASSWORD: ${{ secrets.SPOTFLOW_KEYSTORE_PASSWORD }}
@@ -61,12 +67,28 @@ jobs:
           export SPOTFLOW_KEYSTORE_FILE="$RUNNER_TEMP/spotflow.keystore"
           trap 'rm -f "$SPOTFLOW_KEYSTORE_FILE"' EXIT
           echo "$SPOTFLOW_KEYSTORE_BASE64" | base64 --decode > "$SPOTFLOW_KEYSTORE_FILE"
-          ./gradlew :app:assembleRelease :spotflow-ble-gateway:assembleRelease \
-            :spotflow-ble-gateway:publishReleasePublicationToDistRepository --stacktrace
+          ./gradlew --no-daemon :app:assembleRelease --stacktrace
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      # The bridge's prepack builds the release AAR and publishes it to build/maven-repo before
+      # copying it into the npm package. The GitHub Release uses that same AAR and repository.
+      - name: Test and pack both npm workspaces
+        working-directory: react-native
+        run: |
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm test
+          mkdir -p ../dist
+          bash scripts/pack-release.sh ../dist
 
       # The Maven repository is the way to consume the library: its POM carries the dependencies. The bare
       # .aar is attached too, for those who prefer to list the dependencies themselves (see the README).
-      - name: Collect release artifacts
+      - name: Collect Android release artifacts
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/spotflow-gateway-${GITHUB_REF_NAME}.apk"
@@ -77,8 +99,66 @@ jobs:
           (cd build/maven-repo && zip -qr "$GITHUB_WORKSPACE/dist/spotflow-ble-gateway-${GITHUB_REF_NAME}-maven.zip" .)
           cp LICENSE.md dist/LICENSE.md
 
+      - name: Upload tested release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist
+          path: dist/*
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: dist
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
+          fail_on_unmatched_files: true
           generate_release_notes: true
+
+  npm-release:
+    name: Publish to npm
+    needs: github-release
+    # Opt in only after both package names are bootstrapped and trusted publishers are configured.
+    if: github.repository == 'spotflow-io/gateway-android' && vars.NPM_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download tested release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Set up Node for npm trusted publishing
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # No checkout, npm install, or lifecycle scripts in the job that holds publishing permissions.
+      - name: Publish the packed bridge, then the BLE Manager driver
+        run: |
+          shopt -s nullglob
+          bridge=(./dist/spotflow-react-native-ble-gateway-[0-9]*.tgz)
+          driver=(./dist/spotflow-react-native-ble-gateway-ble-manager-[0-9]*.tgz)
+          if [[ ${#bridge[@]} != 1 || ${#driver[@]} != 1 ]]; then
+            echo '::error::Expected one tarball for each npm package'
+            exit 1
+          fi
+          npm publish "${bridge[0]}" --access public --ignore-scripts
+          npm publish "${driver[0]}" --access public --ignore-scripts

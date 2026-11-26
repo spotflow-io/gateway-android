@@ -32,3 +32,44 @@ provides the React Native Gradle plugin and codegen. Its unit tests run there to
 ```sh
 ./gradlew :spotflow_react-native-ble-gateway:testDebugUnitTest   # in the app's android/ directory
 ```
+
+## Publishing
+
+The Android AAR, POM and Gradle metadata ship inside `@spotflow/react-native-ble-gateway`. Consumers such
+as SimpleLink Connect install both packages from npm; they do not need to check in tarballs or configure
+a remote Maven registry for the gateway.
+
+### First npm release
+
+1. Protect `main` and the `v*` tags in GitHub (restrict tag creation to release maintainers and prevent
+   tag updates/deletions). Create a GitHub environment named `npm-release`; allow deployments only from
+   `v*` tags, require maintainer approval, and prevent self-approval. Leave the repository Actions
+   variable `NPM_PUBLISH_ENABLED` unset for the bootstrap release.
+2. After the release commit is on `main`, push `v<spotflowVersion>` (for example, `v0.4.0`). The release
+   workflow tests, packs, verifies and attaches both npm tarballs to the GitHub Release alongside the
+   Android artifacts. An `@spotflow` maintainer with npm 2FA enabled should download and publish those
+   exact tarballs, bridge first. For the initial npm versions:
+
+   ```sh
+   npm publish ./spotflow-react-native-ble-gateway-0.1.0.tgz --access public --ignore-scripts
+   npm publish ./spotflow-react-native-ble-gateway-ble-manager-0.1.0.tgz --access public --ignore-scripts
+   ```
+
+3. For each npm package, configure a [GitHub Actions trusted publisher](https://docs.npmjs.com/trusted-publishers/)
+   with owner `spotflow-io`, repository `gateway-android`, workflow filename `release.yml`, environment
+   `npm-release`, and permission to run `npm publish`. Set the GitHub **repository** Actions variable
+   `NPM_PUBLISH_ENABLED=true` before the next release. No npm token is needed. Set up the trusted
+   publishers close to the next release: npm expires new configurations that aren't promptly used.
+   After verifying OIDC publishing, restrict token-based publishing in each package's settings.
+
+### Subsequent releases
+
+- Update `spotflowVersion` in the root `gradle.properties` and `spotflowGatewayVersion` in
+  `packages/ble-gateway/android/build.gradle` together. Bump both npm package versions in their manifests
+  and refresh the workspace lockfile (`npm install --package-lock-only --ignore-scripts`). Check that the
+  driver's peer range accepts the bridge version. Keep the native and npm version numbers independent.
+- Tag the merged commit. Only the protected publishing job can request the npm OIDC token; it publishes
+  the checked tarballs without a checkout, dependency install, or package scripts.
+- npm versions are immutable and each package publishes separately. If only the bridge publishes,
+  resolve the failure and publish just the missing driver from the same GitHub Release tarball; don't
+  rebuild or reuse an already-published version for different content.

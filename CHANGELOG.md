@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 The library is split in two layers. `SpotflowGateway` is now the core: it relays devices over connections
 the app attaches, and does not scan. Scanning, connecting and reconnecting moved to `ManagedGateway` in

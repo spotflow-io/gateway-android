@@ -604,7 +604,8 @@ updates; a few are held back on purpose, each with its reason in `.github/depend
 **Releasing:** set `spotflowVersion` in `gradle.properties` (the one version of the library and the demo;
 the demo's version code is derived from it), commit, and tag that commit `v<version>`. The tag runs
 `.github/workflows/release.yml`, which refuses to continue if the tag and `spotflowVersion` disagree, then
-tests, builds the signed APK, the AAR and its Maven repository, and publishes them as a GitHub Release.
+tests and publishes the signed APK, the AAR, its Maven repository and both npm tarballs as a GitHub Release.
+See [npm publishing](react-native/README.md#publishing) for the one-time setup that enables registry publishes.
 
 ### Signing
 
