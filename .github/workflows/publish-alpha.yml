@@ -1,0 +1,93 @@
+name: Publish npm alpha
+run-name: Publish npm alpha of PR #${{ inputs.pr }}
+
+# Publishes the npm alpha that CI built for a pull request: the tarballs of its latest successful CI run,
+# under the `alpha` dist-tag. This job runs no code from the pull request, only npm on its tarballs.
+# Publishing goes through npm trusted publishing: the `npm-alpha` environment accepts only runs from
+# main, so only the reviewed version of this file can publish.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish alpha of PR #${{ inputs.pr }}
+    runs-on: ubuntu-24.04
+    environment: npm-alpha
+    permissions:
+      actions: read # find the CI run and download its tarballs
+      contents: read
+      pull-requests: read
+      id-token: write # npm trusted publishing
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ inputs.pr }}
+    steps:
+      - name: Find the PR's latest successful CI build
+        id: ci
+        run: |
+          read -r fork base head < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json isCrossRepository,baseRefName,headRefOid \
+            --jq '"\(.isCrossRepository) \(.baseRefName) \(.headRefOid)"')
+          if [[ $fork != false || $base != main ]]; then
+            echo "::error::Only PRs into main from branches of this repository get alphas. Push a fork's reviewed commits to a branch here first."
+            exit 1
+          fi
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event pull_request \
+            --commit "$head" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [[ -z $run ]]; then
+            echo "::error::CI has not passed for $head, the head of PR #$PR."
+            exit 1
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Download the tarballs CI built
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-alpha
+          path: dist
+          run-id: ${{ steps.ci.outputs.run }}
+          github-token: ${{ github.token }}
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # The bridge goes first: the driver's peer dependency pins its exact version.
+      - name: Publish the bridge, then the BLE Manager driver
+        env:
+          CI_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.ci.outputs.run }}
+        run: |
+          shopt -s nullglob
+          published=()
+          for package in react-native-ble-gateway react-native-ble-gateway-ble-manager; do
+            tarballs=(dist/spotflow-"$package"-[0-9]*.tgz)
+            if [[ ${#tarballs[@]} != 1 ]]; then
+              echo "::error::Expected one tarball of @spotflow/$package"
+              exit 1
+            fi
+            version=$(tar -xOzf "${tarballs[0]}" package/package.json |
+              jq -r --arg name "@spotflow/$package" 'select(.name == $name).version')
+            if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.$PR\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::${tarballs[0]} is not an alpha of @spotflow/$package for PR #$PR"
+              exit 1
+            fi
+            npm publish "${tarballs[0]}" --tag alpha --access public --ignore-scripts
+            published+=("@spotflow/$package@$version")
+          done
+          {
+            echo "Published the alpha of PR #$PR that [CI built]($CI_RUN). Install it with:"
+            echo '~~~sh'
+            echo "npm install --save-exact ${published[*]}"
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"

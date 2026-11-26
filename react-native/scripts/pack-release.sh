@@ -4,6 +4,7 @@ set -euo pipefail
 # Run from react-native/ after npm ci. Publish only the tarballs checked here.
 destination=${1:?Usage: bash scripts/pack-release.sh <pack-destination>}
 native_version=$(sed -n 's/^spotflowVersion=//p' ../gradle.properties)
+mkdir -p "$destination"
 
 pack_and_check() {
     local package_dir=$1
