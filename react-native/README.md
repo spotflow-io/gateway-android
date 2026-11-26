@@ -39,7 +39,30 @@ The Android AAR, POM and Gradle metadata ship inside `@spotflow/react-native-ble
 as SimpleLink Connect install both packages from npm; they do not need to check in tarballs or configure
 a remote Maven registry for the gateway.
 
-### First npm release
+### Alpha releases from pull requests
+
+1. Review the exact PR commit you want to release. It must be on a branch in `spotflow-io/gateway-android`
+   with `main` as the PR base. For a fork contribution, review it first and create a trusted branch in
+   the library repository if it needs an alpha. Fork PRs cannot request alpha builds here.
+2. A collaborator with permission to label PRs adds `npm-alpha`. If already present, remove and re-add
+   it to build the new head. A push does not trigger another alpha. The **Build npm alpha** workflow
+   tests the PR head and uploads both tarballs. It has no signing or npm credentials and cannot publish.
+   Versions append `-alpha.<pr>.<workflow-run-number>.<run-attempt>` in the build only (e.g. `0.1.0-alpha.8.1.1`
+   for npm and `0.4.0-alpha.8.1.1` for Android). The driver pins the exact bridge version.
+3. An `@spotflow` npm maintainer verifies the successful run is in the library repository, is for the
+   reviewed PR and commit (check the run summary), and that the tarballs match the summary checksums.
+   Publish those exact tarballs, bridge first, with npm 2FA and the **`alpha`** tag, never `latest`:
+
+   ```sh
+   npm publish ./spotflow-react-native-ble-gateway-0.1.0-alpha.8.1.1.tgz --tag alpha --access public --ignore-scripts
+   npm publish ./spotflow-react-native-ble-gateway-ble-manager-0.1.0-alpha.8.1.1.tgz --tag alpha --access public --ignore-scripts
+   ```
+
+   Substitute the actual versions shown in the run. A first alpha publish can also bootstrap the two
+   npm package names. Give consumers the exact versions to pin, not the moving `alpha` tag. The stable
+   release workflow still requires a version tag on `main`.
+
+### First stable npm release
 
 1. Protect `main` and the `v*` tags in GitHub (restrict tag creation to release maintainers and prevent
    tag updates/deletions). Create a GitHub environment named `npm-release`; allow deployments only from
@@ -48,7 +71,8 @@ a remote Maven registry for the gateway.
 2. After the release commit is on `main`, push `v<spotflowVersion>` (for example, `v0.4.0`). The release
    workflow tests, packs, verifies and attaches both npm tarballs to the GitHub Release alongside the
    Android artifacts. An `@spotflow` maintainer with npm 2FA enabled should download and publish those
-   exact tarballs, bridge first. For the initial npm versions:
+   exact tarballs, bridge first. If you already bootstrapped both package names with an alpha, you can
+   use the trusted publishers from step 3 instead. For the initial stable npm versions:
 
    ```sh
    npm publish ./spotflow-react-native-ble-gateway-0.1.0.tgz --access public --ignore-scripts

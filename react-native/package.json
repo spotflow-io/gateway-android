@@ -9,7 +9,7 @@
     "build": "npm run build -w @spotflow/react-native-ble-gateway && npm run build -w @spotflow/react-native-ble-gateway-ble-manager",
     "bundle-android": "node scripts/bundle-android.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"packages/*/src/__tests__/*.test.ts\""
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"packages/*/src/__tests__/*.test.ts\" \"scripts/*.test.mjs\""
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
