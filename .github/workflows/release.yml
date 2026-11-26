@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     name: Test & pack release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # Third-party actions are pinned to a commit; see ci.yml.
       - name: Check out
@@ -39,10 +39,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
-        with:
-          packages: 'platforms;android-35 platforms;android-36 build-tools;36.0.0'
+      - name: Ensure Android SDK packages are installed
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
@@ -120,11 +120,10 @@ jobs:
           path: dist
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          files: dist/*
-          fail_on_unmatched_files: true
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
 
   npm-release:
     name: Publish to npm

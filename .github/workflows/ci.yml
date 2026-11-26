@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     name: Test & build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # Third-party actions are pinned to a commit: a tag can be moved to different code, a commit can't.
       # Dependabot keeps the pins (and the version comments) current.
@@ -28,10 +28,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
-        with:
-          packages: 'platforms;android-35 platforms;android-36 build-tools;36.0.0'
+      - name: Ensure Android SDK packages are installed
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
@@ -84,7 +84,7 @@ jobs:
   # Test and pack both npm packages. The Kotlin bridge itself builds only inside a React Native app.
   react-native:
     name: React Native packages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: react-native
@@ -114,10 +114,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
-        with:
-          packages: 'platforms;android-35 platforms;android-36 build-tools;36.0.0'
+      - name: Ensure Android SDK packages are installed
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
