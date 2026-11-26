@@ -105,7 +105,7 @@ jobs:
             published+=("@spotflow/$package@$version")
           done
           for archive in "${archives[@]}"; do
-            pnpm publish "$archive" --registry https://registry.npmjs.org --tag alpha --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
+            pnpm publish "$archive" --registry https://registry.npmjs.org --tag alpha --access public --ignore-scripts --no-git-checks
           done
           {
             echo "Published the alpha of PR #$PR that [CI built]($CI_RUN). Install it with:"

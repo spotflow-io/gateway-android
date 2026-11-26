@@ -168,5 +168,5 @@ jobs:
             echo '::error::Expected one tarball for each npm package'
             exit 1
           fi
-          pnpm publish "${bridge[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
-          pnpm publish "${driver[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
+          pnpm publish "${bridge[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --no-git-checks
+          pnpm publish "${driver[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --no-git-checks

@@ -80,7 +80,7 @@ alpha, push to the PR or re-run all jobs in its CI workflow. Versions can't be p
 
 npm versions can't be published twice. If the npm job published the bridge but not the driver, a
 re-run fails on the bridge: publish the driver's tarball from the GitHub Release by hand instead
-(`pnpm publish <tarball> --tag latest --access public --ignore-scripts --ignore-pnpmfile --no-git-checks`).
+(`pnpm publish <tarball> --tag latest --access public --ignore-scripts --no-git-checks`).
 
 ### One-time setup
 
@@ -95,8 +95,8 @@ re-run fails on the bridge: publish the driver's tarball from the GitHub Release
 
    ```sh
    gh run download <ci-run-id> --repo spotflow-io/gateway-android --name npm-alpha --dir npm-alpha
-   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-<version>.tgz --tag alpha --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
-   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-ble-manager-<version>.tgz --tag alpha --access public --ignore-scripts --ignore-pnpmfile --no-git-checks
+   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-<version>.tgz --tag alpha --access public --ignore-scripts --no-git-checks
+   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-ble-manager-<version>.tgz --tag alpha --access public --ignore-scripts --no-git-checks
    ```
 
 3. **npm**: in each package's **Settings → Trusted publishing**, add two GitHub Actions publishers for
