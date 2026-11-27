@@ -42,7 +42,9 @@ android {
 
 Apps generated with `expo prebuild` set the same values with `expo-build-properties`
 (`android.minSdkVersion`, `android.packagingOptions`). The module adds its bundled Maven repository to
-the build itself, and needs no permissions beyond the app's BLE permissions, `INTERNET` and
+the build itself, except in builds that configure projects on demand, as Expo's do: there the app
+registers it in `android/build.gradle`, as the
+[driver's SimpleLink Connect steps](../ble-gateway-ble-manager#simplelink-connect) show. The module needs no permissions beyond the app's BLE permissions, `INTERNET` and
 `ACCESS_NETWORK_STATE` (the last two come with it). It leaves the app's manifest — and what other
 libraries declare in theirs — alone; it only removes the gateway's foreground service, which it never
 starts.

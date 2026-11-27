@@ -121,18 +121,38 @@ To relay devices from SimpleLink Connect (Expo 54, React Native 0.81, new archit
    ```
 
    This raises the app's minimum Android version from 7.0 to 8.0.
-3. Create the gateway when the app starts, in builds that include it. The app also runs on iOS, and
-   builds for Android without the native module unless `EXPO_PUBLIC_SIMPLELINK_SPOTFLOW=1` (its
-   `react-native.config.js` excludes the package from autolinking otherwise). Gradle and the JS bundle
-   read the same variable — Expo inlines `EXPO_PUBLIC_` variables into the bundle — so the check is:
+3. Register the gateway's bundled Maven repository in `android/build.gradle`, in `allprojects {
+   repositories { … } }`. Expo builds with `--configure-on-demand`, so `:app` resolves its dependencies
+   before Gradle evaluates the module, whose build script would otherwise add the repository:
 
-   ```ts
-   const spotflow = Platform.OS === 'android' && process.env.EXPO_PUBLIC_SIMPLELINK_SPOTFLOW === '1';
+   ```groovy
+   def spotflowAndroidMavenDir = new File(
+       providers.exec {
+           workingDir(rootDir)
+           commandLine('node', '--print', "require.resolve('@spotflow/react-native-ble-gateway/package.json')")
+       }.standardOutput.asText.get().trim(),
+       '../android/maven'
+   ).canonicalFile
+
+   allprojects {
+       repositories {
+           maven {
+               name = 'spotflowVendored'
+               url = spotflowAndroidMavenDir
+               content { includeModule('io.spotflow', 'spotflow-ble-gateway') }
+           }
+       }
+   }
    ```
 
-   A build where the two ever disagree fails with `E_NOT_LINKED` instead of hiding the feature.
-4. Attach where the device screen has connected and retrieved services, if `hasSpotflowService()` says
-   the device has the Spotflow service. Pass the MTU the app negotiated, and call `link.setMtu()` after
-   `handleRequestMTU` exchanges a new one.
-5. Detach when the user leaves the device, or keep relaying while it stays connected. Attach a new link
-   after every reconnect.
+4. The module is autolinked into every Android build; no build flag is needed. The app offers the relay
+   on `Platform.OS === 'android'` only, as a **Settings → Spotflow Gateway** switch that is off by
+   default. It creates the gateway (`createGateway({ ingestKeySource: 'device', otaEnabled: false })`)
+   once the switch is on and the app is in the foreground, and shuts it down when the switch is turned
+   off or the app goes to the background; the BLE connections stay up either way.
+5. Relay a device once its screen has connected and retrieved services, if `hasSpotflowService()` says
+   it has the Spotflow service and the phone is bonded with it: device-key mode reads the ingest key
+   over GATT, which the firmware must protect with encryption. Pass the MTU the app negotiated, and call
+   `link.setMtu()` after `handleRequestMTU` exchanges a new one. A `RelaySession` per connection starts
+   and stops the attachment.
+6. Stop the session when the user disconnects. After every reconnect, create a new link and session.
