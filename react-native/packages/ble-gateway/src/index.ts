@@ -5,6 +5,7 @@ import type { BleLink } from './link.ts';
 import type { GatewayOptions } from './types.ts';
 
 export { Attachment, SpotflowGateway } from './bridge.ts';
+export { RelaySession, type RelayAttachmentView, type RelaySessionPhase } from './relay-session.ts';
 export { BleLinkError, GattProfile } from './link.ts';
 export type { BleLink, Bytes, GattRef, NotificationListener } from './link.ts';
 export type {

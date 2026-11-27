@@ -116,6 +116,17 @@ add `ingestKeySource: 'gateway'` when migrating. Neither mode falls back to the 
 
 ### Lifecycle
 
+Use `new RelaySession(link)` to coordinate repeated starts and stops on a live connection.
+`session.start(gateway)` shares the result of repeated starts with the same gateway handle and returns
+a read-only attachment view (`state`, `onStateChange()`, `ended`), or `undefined` if cancelled before it
+returns. `session.stop()` detaches and waits for cleanup without disconnecting BLE. A new start can queue
+behind that cleanup. Use a new session and link after reconnecting.
+
+Read `session.phase` or subscribe with `session.onPhaseChange(listener)` (`idle`, `starting`, `attached`,
+`stopping`). If your app offers manual control of the relay's GATT stream, only allow it while the
+session is `idle`. `attached` does not mean the attachment is ready or the cloud is connected.
+Direct `gateway.attach()` remains available for apps managing their own sessions.
+
 - There is one gateway per process. `createGateway()` with the same options returns the running gateway,
   for example after a JS reload. With different options it shuts the old gateway down first, keeping its
    unsent data in the flash buffer if enabled. The new gateway can only upload data from a compatible queue.
