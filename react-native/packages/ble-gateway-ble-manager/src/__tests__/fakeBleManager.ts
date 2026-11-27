@@ -93,13 +93,26 @@ export class FakeBleManager implements BleManagerApi {
   }
 
   disconnect(peripheral: string): void {
+    this.dropConnection('Device disconnected');
+    this.disconnectListeners.forEach((listener) => listener({ peripheral }));
+  }
+
+  /**
+   * The app calls `BleManager.disconnect()`: the library fails the command in flight with its own message,
+   * and the disconnect event reaches JS only after that failure.
+   */
+  hostDisconnect(peripheral: string): void {
+    this.dropConnection('Disconnect called before the command completed');
+    setImmediate(() => this.disconnectListeners.forEach((listener) => listener({ peripheral })));
+  }
+
+  private dropConnection(inFlightFailure: string): void {
     this.connected = false;
-    this.inFlightReject?.('Device disconnected');
+    this.inFlightReject?.(inFlightFailure);
     this.inFlightReject = undefined;
     this.heldCompletion = undefined;
     this.queue.length = 0;
     this.busy = false;
-    this.disconnectListeners.forEach((listener) => listener({ peripheral }));
   }
 
   private cccd(peripheralId: string, what: string): Promise<void> {

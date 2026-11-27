@@ -157,6 +157,57 @@ describe('BleManagerLink', () => {
     assert.deepEqual(events, ['disconnected', 'failed']);
   });
 
+  it("treats an operation interrupted by the app's own disconnect as the disconnect", async () => {
+    const { manager, link } = setUp();
+    const events: string[] = [];
+    link.onDisconnect(() => events.push('disconnected'));
+    manager.holdStack = true;
+    const read = link.read(DEVICE_ID).catch((error: Error) => events.push(`failed: ${error.message}`));
+    await ticks();
+    manager.hostDisconnect('AA:BB:CC:DD:EE:FF');
+    await read;
+    assert.deepEqual(events, ['disconnected', 'failed: device disconnected']);
+  });
+
+  it("fails a write whose fence the app's own disconnect interrupts", async () => {
+    const { manager, link } = setUp();
+    manager.holdStack = true;
+    const write = link.writeWithoutResponse(RX, [[1]]);
+    await ticks();
+    manager.completeStackOperation(); // the frame's write; the fence is next
+    await ticks();
+    assert.deepEqual(manager.gatt, ['write 1', 'rssi']);
+    manager.hostDisconnect('AA:BB:CC:DD:EE:FF');
+    await assert.rejects(write, /device disconnected/);
+    assert.equal(link.isDisconnected, true);
+  });
+
+  it('ends its links when disposed and listens again for new ones', async () => {
+    const { manager, driver, link } = setUp();
+    const values: number[][] = [];
+    const listener = { onValue: (v: ReadonlyArray<number> | Uint8Array) => values.push([...v]), onError: () => {} };
+    await link.enableNotifications(TX, listener);
+    let disconnected = false;
+    link.onDisconnect(() => (disconnected = true));
+    manager.holdStack = true;
+    const pending = link.read(DEVICE_ID);
+    await ticks();
+
+    driver.dispose();
+    assert.equal(disconnected, true);
+    await assert.rejects(pending, /device disconnected/);
+    const tx = { peripheral: 'AA:BB:CC:DD:EE:FF', service: SERVICE, characteristic: TX.characteristic };
+    manager.notify({ ...tx, value: [1] });
+    assert.deepEqual(values, []);
+
+    manager.holdStack = false;
+    manager.completeStackOperation();
+    const fresh = driver.link(ID);
+    await fresh.enableNotifications(TX, listener);
+    manager.notify({ ...tx, value: [2] });
+    assert.deepEqual(values, [[2]]);
+  });
+
   it('ignores disconnects of other peripherals', async () => {
     const { manager, link } = setUp();
     manager.disconnect('11:22:33:44:55:66');

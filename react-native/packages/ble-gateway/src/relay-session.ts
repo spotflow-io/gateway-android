@@ -1,5 +1,6 @@
 import type { Attachment, SpotflowGateway } from './bridge.ts';
 import type { BleLink } from './link.ts';
+import { notify } from './notify.ts';
 
 /** Session lifecycle, separate from the attachment's own readiness and cloud status. */
 export type RelaySessionPhase = 'idle' | 'starting' | 'attached' | 'stopping';
@@ -15,21 +16,11 @@ interface Attempt {
   attachment?: Attachment;
 }
 
-function notify<T>(listener: (value: T) => void, value: T): void {
-  try {
-    listener(value);
-  } catch (error) {
-    // Surface observer errors without interrupting detach or suppressing the cleanup signal.
-    setTimeout(() => { throw error; }, 0);
-  }
-}
-
 function attachmentView(attachment: Attachment): RelayAttachmentView {
   return Object.freeze({
     address: attachment.address,
     get state() { return attachment.state; },
-    onStateChange: (listener: Parameters<Attachment['onStateChange']>[0]) =>
-      attachment.onStateChange((state) => notify(listener, state)),
+    onStateChange: (listener: Parameters<Attachment['onStateChange']>[0]) => attachment.onStateChange(listener),
     ended: attachment.ended,
   });
 }

@@ -98,7 +98,11 @@ await BleManager.scan({ serviceUUIDs: [GattProfile.SERVICE], seconds: 5 });
   the `onDidUpdateValueForCharacteristic` event, filtered to the link's peripheral and characteristic.
   `startNotificationWithBuffer` is not used: it concatenates values, which breaks framing.
 - The library drops queued operations on a disconnect without settling them; the driver fails them
-  after reporting the disconnect. It also treats a "not connected" failure as a disconnect.
+  after reporting the disconnect. It also treats a "not connected" failure, and the failure of an
+  operation interrupted by the app's own `BleManager.disconnect()`, as a disconnect.
+- `bleManagerLink()` uses one driver for the app's `BleManager`. An app that builds its own with
+  `new BleManagerDriver(BleManager)` calls `driver.dispose()` when it is done with it: its links end as
+  if disconnected, and the BLE connections stay up.
 - GATT statuses are parsed from the library's error messages (`status=5`), so the gateway can tell the
   user to pair a device that requires encryption.
 

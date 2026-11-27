@@ -12,6 +12,10 @@
   **`DeviceError.Kind.PAIRING_REQUIRED`** for a device that needs an encrypted link the phone doesn't
   have. Such failures were `BLUETOOTH`, so an app that wanted to ask the user to pair had to parse the
   message. Both reach React Native too.
+- React Native: the **`GatewayErrorCode`** type lists every `code` the gateway's functions reject with,
+  and when. A failed `readDeviceId()` read keeps its `code` (`E_BLE`) on the `BleLinkError`.
+- React Native: **`BleManagerDriver.dispose()`** stops a driver the app built itself; its links end as if
+  disconnected, and the BLE connections stay up.
 
 ### Changed
 
@@ -47,6 +51,12 @@
   down or replaced by `createGateway()` with other options (also from another React context), its
   `attach()` and `diagnosticsSnapshot()` reject and its `shutdown()` does nothing; it used to act on
   whatever gateway was current.
+- React Native: `createGateway()` returns the same handle for as long as its gateway runs, so
+  `RelaySession.start()` accepts the handles of separate `createGateway()` calls; it rejected them as
+  different gateways.
+- React Native: the type declarations keep the constructors of `SpotflowGateway`, `Attachment` and
+  `BleManagerLink`, so a `new SpotflowGateway()` without arguments no longer type-checks and then fails
+  at runtime. Apps don't construct them. `BleManagerLink.markDisconnected()` is no longer public.
 - The `BleLink` contract says what the gateway does: it waits for one call at a time, but may issue the
   next while one it stopped waiting for still runs, so adapters queue calls per connection.
 
@@ -64,6 +74,12 @@
   gateway now keeps them in a directory of its own.
 - `GattBridge` reports an operation Android refuses to issue (or a missing characteristic) as a
   `BleLinkException`, as `BleLink` requires, rather than an `IllegalStateException`.
+- React Native: an app calling `BleManager.disconnect()` while the gateway had an operation running could
+  end the attachment `FAILED` instead of `DISCONNECTED`, and a write whose queue fence it interrupted
+  reported success. The `react-native-ble-manager` driver now treats that failure as the disconnect.
+- React Native: an `Attachment.onStateChange` listener that threw kept the later listeners from the state,
+  and `ended` from ever resolving, which also left a `RelaySession` stuck. Its error is now reported on its
+  own.
 
 ## 0.4.0
 

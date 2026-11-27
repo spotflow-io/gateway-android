@@ -147,6 +147,7 @@ internal class SpotflowGatewayModule(context: ReactApplicationContext) : NativeS
     companion object {
         const val NAME = NativeSpotflowGatewaySpec.NAME
 
+        // Rejection codes; keep them in step with GatewayErrorCode in src/types.ts.
         private const val E_INVALID_OPTIONS = "E_INVALID_OPTIONS"
         private const val E_GATEWAY = "E_GATEWAY"
         private const val E_NOT_CONFIGURED = "E_NOT_CONFIGURED"

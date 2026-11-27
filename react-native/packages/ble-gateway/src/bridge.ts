@@ -13,6 +13,7 @@ import {
   type GattRef,
   type NotificationListener,
 } from './link.ts';
+import { notify } from './notify.ts';
 import type {
   AttachmentEnd,
   AttachmentState,
@@ -56,7 +57,7 @@ export class Attachment {
   private readonly requestDetach: () => void;
   private resolveEnded!: (end: AttachmentEnd) => void;
 
-  /** @internal */
+  /** Apps get attachments from {@link SpotflowGateway.attach}, not by constructing them. */
   constructor(address: string, requestDetach: () => void) {
     this.address = address;
     this.requestDetach = requestDetach;
@@ -70,7 +71,10 @@ export class Attachment {
     return this.current;
   }
 
-  /** Calls `listener` with each later state. Returns a function that unsubscribes. */
+  /**
+   * Calls `listener` with each later state. Returns a function that unsubscribes. An error the listener
+   * throws is reported on its own; it doesn't keep other listeners or {@link ended} from seeing the state.
+   */
   onStateChange(listener: (state: AttachmentState) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -89,10 +93,13 @@ export class Attachment {
   update(state: AttachmentState): void {
     if (this.current.type === 'ended') return;
     this.current = state;
-    this.listeners.forEach((listener) => listener(state));
-    if (state.type === 'ended') {
-      this.listeners.clear();
-      this.resolveEnded(state.result);
+    try {
+      this.listeners.forEach((listener) => notify(listener, state));
+    } finally {
+      if (state.type === 'ended') {
+        this.listeners.clear();
+        this.resolveEnded(state.result);
+      }
     }
   }
 }
@@ -102,13 +109,14 @@ export class Attachment {
  *
  * A handle stands for the gateway it was created for: once that gateway has been shut down, or replaced
  * by `createGateway()` with other options (also from another React context), the handle's calls reject
- * and its `shutdown()` does nothing. Calling `createGateway()` again returns a handle to the current one.
+ * and its `shutdown()` does nothing. Calling `createGateway()` again returns a handle to the current one:
+ * the same object for as long as that gateway runs.
  */
 export class SpotflowGateway {
   private readonly bridge: Bridge;
   private readonly id: number;
 
-  /** @internal */
+  /** Apps get the gateway from `createGateway()`, not by constructing it. */
   constructor(bridge: Bridge, id: number) {
     this.bridge = bridge;
     this.id = id;
@@ -218,6 +226,8 @@ export class Bridge {
   private readonly registrations = new Map<number, Registration>();
   private readonly attachments = new Map<number, Attachment>();
   private nextAttachmentId = 0;
+  /** The handle of the latest gateway configured, so repeated configurations share one handle. */
+  private gateway: { id: number; handle: SpotflowGateway } | undefined;
 
   constructor(native: NativeGateway) {
     this.native = native;
@@ -226,7 +236,9 @@ export class Bridge {
   }
 
   async configure(options: GatewayOptions): Promise<SpotflowGateway> {
-    return new SpotflowGateway(this, await this.native.configure(options));
+    const id = await this.native.configure(options);
+    if (this.gateway?.id !== id) this.gateway = { id, handle: new SpotflowGateway(this, id) };
+    return this.gateway.handle;
   }
 
   async attach(gatewayId: number, link: BleLink): Promise<Attachment> {
@@ -322,7 +334,7 @@ function asError(error: unknown): Error {
   const info = (error as { userInfo?: { gattStatus?: unknown } } | null)?.userInfo;
   const code = (error as { code?: unknown } | null)?.code;
   if (code === 'E_BLE') {
-    return new BleLinkError(messageOf(error), gattStatusOf(info));
+    return Object.assign(new BleLinkError(messageOf(error), gattStatusOf(info)), { code });
   }
   return error instanceof Error ? error : new Error(messageOf(error));
 }

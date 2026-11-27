@@ -78,7 +78,8 @@ async function relay(peripheralId: string, mtu: number) {
   can call it where it needs the gateway. It rejects with an error whose `code` is
   `E_UNSUPPORTED_PLATFORM` off Android, and `E_NOT_LINKED` on Android if the native module is not in the
   build (rebuild the app after installing the package). An app that builds for Android both with and
-  without the module adds its own build flag to the check.
+  without the module adds its own build flag to the check. The exported `GatewayErrorCode` type lists
+  every `code` the gateway's functions reject with, and when.
 - A link's `address` is the peripheral's Bluetooth address, upper case — for `react-native-ble-manager`,
   the peripheral ID it hands out (see the [driver's README](../ble-gateway-ble-manager#peripheral-ids)).
   The gateway tells peripherals apart by it. The Spotflow device ID is something else: the device
@@ -117,7 +118,8 @@ add `ingestKeySource: 'gateway'` when migrating. Neither mode falls back to the 
 ### Lifecycle
 
 Use `new RelaySession(link)` to coordinate repeated starts and stops on a live connection.
-`session.start(gateway)` shares the result of repeated starts with the same gateway handle and returns
+`session.start(gateway)` shares the result of repeated starts with the same gateway handle (every
+`createGateway()` call returns the same handle while its gateway runs) and returns
 a read-only attachment view (`state`, `onStateChange()`, `ended`), or `undefined` if cancelled before it
 returns. `session.stop()` detaches and waits for cleanup without disconnecting BLE. A new start can queue
 behind that cleanup. Use a new session and link after reconnecting.

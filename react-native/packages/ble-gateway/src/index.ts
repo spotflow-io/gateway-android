@@ -15,6 +15,7 @@ export type {
   DeviceError,
   DeviceReport,
   FirmwareTransfer,
+  GatewayErrorCode,
   GatewayOptions,
   GatewayReport,
 } from './types.ts';

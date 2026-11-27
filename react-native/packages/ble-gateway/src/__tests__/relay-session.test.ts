@@ -156,6 +156,16 @@ describe('RelaySession', () => {
     assert.equal(session.phase, 'idle');
   });
 
+  it("cleans up after an attachment whose own listener throws", async (t) => {
+    t.mock.method(globalThis, 'setTimeout', () => {});
+    const { attachment, gateway, session, finish } = setup();
+    await session.start(gateway);
+    attachment.onStateChange(() => { throw new Error('app bug'); });
+    finish();
+    await flush();
+    assert.equal(session.phase, 'idle');
+  });
+
   it('releases a failed start and allows immediate retry', async () => {
     const { attachment, gateway, session, finish } = setup();
     gateway.attach.mock.mockImplementationOnce(async () => { throw new Error('attach failed'); });

@@ -50,8 +50,11 @@ export function hasSpotflowService(peripheral: { services?: ReadonlyArray<{ uuid
 const MIN_MTU = 23;
 const MAX_FRAME_BYTES = 512;
 
-/** Failure messages of `react-native-ble-manager` that mean the link is gone. */
-const DISCONNECTED = /device disconnected|not connected|peripheral not found|gatt is null/i;
+/**
+ * Failure messages of `react-native-ble-manager` that mean the link is gone. "Disconnect called" fails the
+ * operation in flight when the host itself calls `BleManager.disconnect()`.
+ */
+const DISCONNECTED = /device disconnected|disconnect called|not connected|peripheral not found|gatt is null/i;
 
 /** A GATT status in a `react-native-ble-manager` error message, e.g. `... status=5`. */
 const GATT_STATUS = /status\s*=\s*(\d+)/i;
@@ -78,7 +81,7 @@ export class BleManagerDriver {
   private readonly manager: BleManagerApi;
   private readonly live = new Map<string, Set<BleManagerLink>>();
   private readonly subscriptions = new Map<string, { link: BleManagerLink; listener: NotificationListener }>();
-  private listening = false;
+  private events: Subscription[] = [];
 
   constructor(manager: BleManagerApi) {
     this.manager = manager;
@@ -108,22 +111,36 @@ export class BleManagerDriver {
 
   /** @internal */
   forget(link: BleManagerLink): void {
-    this.live.get(link.address)?.delete(link);
+    const links = this.live.get(link.address);
+    if (links?.delete(link) && links.size === 0) this.live.delete(link.address);
     for (const [k, subscription] of this.subscriptions) {
       if (subscription.link === link) this.subscriptions.delete(k);
     }
   }
 
+  /**
+   * Stops listening to the library's events. Every link of this driver ends as if disconnected, because
+   * nothing would report its disconnect any more; the BLE connections stay up. A later {@link link} call
+   * starts listening again.
+   */
+  dispose(): void {
+    const events = this.events;
+    this.events = [];
+    events.forEach((subscription) => subscription.remove());
+    [...this.live.values()].flatMap((links) => [...links]).forEach((link) => link.markDisconnected());
+  }
+
   private listen(): void {
-    if (this.listening) return;
-    this.listening = true;
-    this.manager.onDidUpdateValueForCharacteristic((event) => {
-      this.subscriptions.get(key(event.peripheral, event.service, event.characteristic))?.listener.onValue(event.value);
-    });
-    this.manager.onDisconnectPeripheral((event) => {
-      const links = this.live.get(event.peripheral.toUpperCase());
-      links && [...links].forEach((link) => link.markDisconnected());
-    });
+    if (this.events.length > 0) return;
+    this.events = [
+      this.manager.onDidUpdateValueForCharacteristic((event) => {
+        this.subscriptions.get(key(event.peripheral, event.service, event.characteristic))?.listener.onValue(event.value);
+      }),
+      this.manager.onDisconnectPeripheral((event) => {
+        const links = this.live.get(event.peripheral.toUpperCase());
+        links && [...links].forEach((link) => link.markDisconnected());
+      }),
+    ];
   }
 }
 
@@ -139,7 +156,7 @@ export class BleManagerLink implements BleLink {
   private readonly disconnectListeners = new Set<() => void>();
   private readonly mtuListeners = new Set<(bytes: number) => void>();
 
-  /** @internal */
+  /** Apps get links from {@link BleManagerDriver.link} or `bleManagerLink()`, not by constructing them. */
   constructor(driver: BleManagerDriver, manager: BleManagerApi, peripheralId: string, mtu: number) {
     this.driver = driver;
     this.manager = manager;
@@ -226,6 +243,7 @@ export class BleManagerLink implements BleLink {
   /**
    * The link dropped: signals it first, then fails every operation still pending, because the library
    * drops its queued operations on a disconnect without settling them.
+   * @internal
    */
   markDisconnected(): void {
     if (this.down) return;

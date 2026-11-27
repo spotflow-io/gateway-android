@@ -151,6 +151,18 @@ describe('Bridge', () => {
     assert.deepEqual(native.last(), ['configure', { ingestKeySource: 'gateway', ingestKey: 'test-key' }]);
   });
 
+  it('returns one handle while the same gateway runs', async () => {
+    const { native, bridge } = setUp();
+    let gatewayId = 1;
+    native.module.configure = async () => gatewayId;
+    const first = await bridge.configure({});
+    assert.equal(await bridge.configure({}), first);
+    gatewayId = 2; // configured with other options, here or in another React context
+    const replacement = await bridge.configure({});
+    assert.notEqual(replacement, first);
+    assert.equal(await bridge.configure({}), replacement);
+  });
+
   it('acts on the gateway a handle was created for, not on one that replaced it', async () => {
     const { native, bridge } = setUp();
     const first = await bridge.configure({});
@@ -294,6 +306,22 @@ describe('Bridge', () => {
     assert.equal(native.calls.length, calls, 'detaching an ended attachment does nothing');
   });
 
+  it("delivers the end to every listener and to ended when a listener throws", async (t) => {
+    const reported: Array<() => void> = [];
+    t.mock.method(globalThis, 'setTimeout', (callback: () => void) => void reported.push(callback));
+    const { native, bridge } = setUp();
+    const attachment = await bridge.attach(GATEWAY, new FakeLink());
+    const seen: string[] = [];
+    attachment.onStateChange(() => { throw new Error('app bug'); });
+    attachment.onStateChange((state) => seen.push(state.type));
+
+    native.state({ attachmentId: 1, type: 'ended', result: { reason: 'DISCONNECTED' } });
+    assert.deepEqual(await attachment.ended, { reason: 'DISCONNECTED' });
+    assert.deepEqual(seen, ['ended']);
+    assert.equal(reported.length, 1);
+    assert.throws(reported[0]!, /app bug/, "the listener's error is reported on its own");
+  });
+
   it('reports diagnostics with the same attachment states as the events', async () => {
     const { native, bridge } = setUp();
     const gateway = await bridge.configure({ ingestKeySource: 'gateway', ingestKey: 'key' });
@@ -326,6 +354,7 @@ describe('Bridge', () => {
     await assert.rejects(bridge.readDeviceId(new FakeLink()), (error: unknown) => {
       assert.ok(error instanceof BleLinkError);
       assert.equal(error.gattStatus, 5);
+      assert.equal((error as BleLinkError & { code?: string }).code, 'E_BLE');
       return true;
     });
   });

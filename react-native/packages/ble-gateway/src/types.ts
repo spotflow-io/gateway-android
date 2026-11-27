@@ -17,6 +17,30 @@ export type GatewayOptions = GatewaySettings & (
 );
 
 /**
+ * The `code` of an error the gateway's functions reject with:
+ *
+ * - `E_UNSUPPORTED_PLATFORM`: `createGateway()` or `readDeviceId()` off Android.
+ * - `E_NOT_LINKED`: the same, on Android without the native module in the build.
+ * - `E_INVALID_OPTIONS`: `createGateway()` with an option missing or out of range.
+ * - `E_GATEWAY`: `createGateway()` could not start the gateway.
+ * - `E_NOT_CONFIGURED`: `attach()` or `diagnosticsSnapshot()` on a handle whose gateway has been shut down
+ *   or replaced.
+ * - `E_INVALID_ADDRESS`: `attach()` with a link whose `address` is not a Bluetooth address.
+ * - `E_LINK_DOWN`: `attach()` or `readDeviceId()` with a link that has disconnected.
+ * - `E_BLE`: `readDeviceId()` failed on the link; the error is a `BleLinkError`, with `gattStatus` where
+ *   the stack reported one.
+ */
+export type GatewayErrorCode =
+  | 'E_UNSUPPORTED_PLATFORM'
+  | 'E_NOT_LINKED'
+  | 'E_INVALID_OPTIONS'
+  | 'E_GATEWAY'
+  | 'E_NOT_CONFIGURED'
+  | 'E_INVALID_ADDRESS'
+  | 'E_LINK_DOWN'
+  | 'E_BLE';
+
+/**
  * Why a device is not (fully) relayed: how an attachment failed, or what keeps its cloud connection from
  * working. `CLOUD_UNREACHABLE` only appears as a `cloudError`; `PAIRING_REQUIRED` means the device needs an
  * encrypted link: pair (bond) the phone with it, then attach again.
