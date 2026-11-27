@@ -1,16 +1,19 @@
 package io.spotflow.ble
 
 import io.spotflow.ble.cloud.MqttAuthException
+import io.spotflow.ble.cloud.DeviceIngestCredential
 import io.spotflow.ble.cloud.StoreAndForwardBuffer
 import io.spotflow.ble.cloud.Uplink
 import io.spotflow.ble.cloud.UplinkDisconnectedException
 import io.spotflow.ble.cloud.UplinkThrottledException
+import io.spotflow.ble.diagnostics.DeviceDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -23,9 +26,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-
-/** A status update applied to a device's [GatewayDeviceState]. */
-internal typealias StatusPush = ((GatewayDeviceState) -> GatewayDeviceState) -> Unit
 
 /**
  * The cloud side of one device: its store-and-forward [buffer], its [uplink], and the drain loop that
@@ -40,24 +40,24 @@ internal class CloudLink(
     val deviceId: String,
     private val buffer: StoreAndForwardBuffer,
     private val uplink: Uplink,
-    initialPush: StatusPush,
+    initialDiagnostics: DeviceDiagnostics?,
     /** Whether the phone has a network: without one, connecting waits for it instead of retrying. */
     private val online: StateFlow<Boolean> = MutableStateFlow(true),
 ) {
     /**
-     * Where status updates go: the current BLE session's status (or a no-op for a recovered link).
+     * Where diagnostics go: the current device row (or null for a recovered link with no BLE session).
      * Replacing it — a new session taking over this link — immediately publishes the link's current
      * state, since a link that is already connected won't report "connected" again on its own.
      */
-    @Volatile var push: StatusPush = initialPush
+    @Volatile var diagnostics: DeviceDiagnostics? = initialDiagnostics
         set(value) {
             field = value
-            publishSnapshot()
+            refreshDiagnostics()
         }
 
     private val drainSignal = Channel<Unit>(Channel.CONFLATED)
 
-    /** Set once the broker rejected the credentials; the link is then closed rather than kept alive. */
+    /** Whether the most recent connect attempt was rejected. A detached link backs off before retrying. */
     @Volatile var authRejected = false
         private set
 
@@ -105,17 +105,18 @@ internal class CloudLink(
         // Report a lost connection as it happens and wake an idle drain loop to reconnect, rather than
         // leaving the status "connected" until the next message or poll.
         uplink.onConnectionLost = {
-            push { it.copy(cloudConnected = false) }
+            diagnostics?.update { cloudConnected = false }
             drainSignal.trySend(Unit)
         }
     }
 
     val isEmpty: Boolean get() = buffer.isEmpty
+    val queueId: String get() = buffer.deviceId
 
     private fun receive(queue: InboundQueue, kind: String, payload: ByteArray, ack: () -> Unit) {
         val queued = queue.offer(payload, ack) ?: return
         Slog.d(TAG, "$kind for $deviceId received (${payload.size} bytes, $queued pending)")
-        push { it.copy(received = it.received + 1) }
+        diagnostics?.update { cloudMessagesReceived++ }
     }
 
     /**
@@ -181,7 +182,8 @@ internal class CloudLink(
 
     /**
      * Publishes the buffer to MQTT, (re)connecting as needed. Runs until cancelled or, with
-     * [stopWhenEmpty], until the buffer is empty. Throws [MqttAuthException] if the key is rejected.
+     * [stopWhenEmpty], until the buffer is empty. If the key is rejected, an attached session fails;
+     * a background drain persists what it can and retries with a longer backoff.
      *
      * Up to a *window* of messages are in flight at once, sent in order, so throughput is not bound to
      * one round trip per message. Any failure shrinks the window to a single message, where the outcome
@@ -189,6 +191,12 @@ internal class CloudLink(
      */
     suspend fun drain(stopWhenEmpty: Boolean) {
         var backoff = INITIAL_BACKOFF_MS
+        var authBackoff = AUTH_RETRY_INITIAL_MS
+        if (stopWhenEmpty && authRejected) {
+            persistBacklog()
+            delay(authBackoff)
+            authBackoff *= 2
+        }
         var window = MAX_WINDOW
         var failingSeq = -1L
         var failures = 0
@@ -198,16 +206,26 @@ internal class CloudLink(
         // Set when the broker refused the OTA subscription: not asked again on the same connection.
         var otaRefused = false
         while (true) {
+            if (stopWhenEmpty && isEmpty) return
             if (!uplink.isConnected) {
                 if (!online.value) {
                     // No network: there is nothing to retry against. Wait for one.
-                    push { it.copy(cloudConnected = false) }
+                    diagnostics?.update { cloudConnected = false }
                     online.first { it }
                     backoff = INITIAL_BACKOFF_MS
                 }
                 try {
+                    // The broker resends what is unacknowledged as soon as the connection is up, before
+                    // connect() returns: match those against the queued messages from here on.
+                    desired.expectRedelivery()
+                    otaCommands.expectRedelivery()
                     uplink.connect()
-                    push { it.copy(cloudConnected = true, error = it.error?.takeUnless { error -> isCloudError(error) }) }
+                    authRejected = false
+                    authBackoff = AUTH_RETRY_INITIAL_MS
+                    diagnostics?.update {
+                        cloudConnected = true
+                        cloudError = null
+                    }
                     backoff = INITIAL_BACKOFF_MS
                     restoreContext = true
                     otaRefused = false
@@ -215,10 +233,21 @@ internal class CloudLink(
                     throw c
                 } catch (auth: MqttAuthException) {
                     authRejected = true
-                    push { it.copy(cloudConnected = false, error = DeviceError(DeviceError.Kind.AUTH_REJECTED, auth.describe())) }
-                    throw auth // the caller decides when to try the credentials again
+                    diagnostics?.update {
+                        cloudConnected = false
+                        cloudError = DeviceError(DeviceError.Kind.AUTH_REJECTED, auth.describe())
+                    }
+                    if (!stopWhenEmpty) throw auth // reported in AttachmentEnd
+                    persistBacklog()
+                    Slog.w(TAG, "buffered uploads for $deviceId paused: credentials rejected; retrying in ${authBackoff / 1000} s")
+                    delay(authBackoff)
+                    authBackoff = (authBackoff * 2).coerceAtMost(AUTH_RETRY_MAX_MS)
+                    continue
                 } catch (t: Throwable) {
-                    push { it.copy(cloudConnected = false, error = DeviceError(DeviceError.Kind.CLOUD_UNREACHABLE, t.describe())) }
+                    diagnostics?.update {
+                        cloudConnected = false
+                        cloudError = DeviceError(DeviceError.Kind.CLOUD_UNREACHABLE, t.describe())
+                    }
                     awaitRetry(backoff)
                     backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
                     continue
@@ -244,7 +273,7 @@ internal class CloudLink(
                     Outcome.ConnectionLost, Outcome.Throttled -> true
                 }
                 if (retry) {
-                    if (!uplink.isConnected) push { it.copy(cloudConnected = false) }
+                    if (!uplink.isConnected) diagnostics?.update { cloudConnected = false }
                     awaitRetry(backoff)
                     backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
                     continue
@@ -257,7 +286,7 @@ internal class CloudLink(
                 if (uplink.isConnected) {
                     otaRefused = true
                 } else {
-                    push { it.copy(cloudConnected = false) }
+                    diagnostics?.update { cloudConnected = false }
                     awaitRetry(backoff)
                     backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
                     continue
@@ -282,7 +311,7 @@ internal class CloudLink(
                     delivered++
                 }
             }
-            if (delivered > 0) push { it.copy(forwarded = it.forwarded + delivered) }
+            if (delivered > 0) diagnostics?.update { forwarded += delivered }
             pushBuffer()
             if (delivered == batch.size.toLong()) {
                 backoff = INITIAL_BACKOFF_MS
@@ -326,7 +355,7 @@ internal class CloudLink(
                 Slog.w(TAG, "publish for $deviceId stalled >${PUBLISH_TIMEOUT_MS}ms; forcing reconnect")
                 runCatching { uplink.disconnect() }
             }
-            if (!uplink.isConnected) push { it.copy(cloudConnected = false) }
+            if (!uplink.isConnected) diagnostics?.update { cloudConnected = false }
             awaitRetry(backoff)
             backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
         }
@@ -444,6 +473,11 @@ internal class CloudLink(
      *
      * A session starts by replaying the last configuration written to the device (unless newer ones are
      * pending), since the device may have rebooted and lost it — see [lastWrittenDesired].
+     *
+     * A failed write is retried. It says nothing about the configuration — the link timed out, dropped,
+     * or the stack refused the write — so it is never dropped for it: after [MAX_DESIRED_ATTEMPTS] failures
+     * in a row this session stops trying, and the configuration waits, unacknowledged, for the next one.
+     * Only a configuration that can never be written (too large to frame) is dropped.
      */
     suspend fun deliverDesiredConfiguration(write: suspend (ByteArray) -> Unit) {
         val replay = lastWrittenDesired.takeIf { desired.isEmpty }
@@ -457,6 +491,7 @@ internal class CloudLink(
                 Slog.w(TAG, "desired configuration re-send failed: ${t.message}")
             }
         }
+        var failures = 0
         while (true) {
             val head = desired.next()
             val done = try {
@@ -471,15 +506,17 @@ internal class CloudLink(
                 true
             } catch (t: Throwable) {
                 Slog.w(TAG, "desired configuration write failed: ${t.message}")
-                if (++head.failures >= MAX_DESIRED_ATTEMPTS) {
-                    Slog.w(TAG, "dropping desired configuration after ${head.failures} failures")
-                    true
-                } else {
-                    delay(DESIRED_RETRY_MS)
-                    false
+                if (++failures >= MAX_DESIRED_ATTEMPTS) {
+                    Slog.w(TAG, "desired configuration for $deviceId left pending for the next session after $failures failures")
+                    awaitCancellation()
                 }
+                delay(DESIRED_RETRY_MS)
+                false
             }
-            if (done) desired.complete(head)
+            if (done) {
+                failures = 0
+                desired.complete(head)
+            }
         }
     }
 
@@ -507,49 +544,53 @@ internal class CloudLink(
         }
     }
 
+    private fun persistBacklog() {
+        runCatching { buffer.flushToDisk() }
+        pushBuffer()
+    }
+
     /**
      * Persists anything still in RAM, disconnects, and closes the buffer. Flushing comes first so a
      * process kill during the (network-bound) disconnect loses nothing.
      */
     suspend fun close() = withContext(NonCancellable) {
-        runCatching { buffer.flushToDisk() }
-        pushBuffer()
+        persistBacklog()
         uplink.desiredConfigurationHandler = null
         uplink.otaCommandHandler = null
         uplink.onConnectionLost = null
         buffer.onExternalChange = null
         runCatching { uplink.disconnect() }
-        push { it.copy(cloudConnected = false) }
+        diagnostics?.update { cloudConnected = false }
         runCatching { buffer.close() }
     }
 
-    private fun publishSnapshot() {
+    private fun refreshDiagnostics() {
         val connected = uplink.isConnected
-        val pending = buffer.count
-        val ram = buffer.ramBytes
-        val disk = buffer.diskBytes
-        push {
-            it.copy(
-                cloudConnected = connected,
-                error = if (connected) it.error?.takeUnless { error -> isCloudError(error) } else it.error,
-                pendingMessages = pending,
-                ramBytes = ram,
-                diskBytes = disk,
-            )
+        diagnostics?.update {
+            cloudConnected = connected
+            if (connected) cloudError = null
         }
+        pushBuffer()
     }
 
     private fun pushBuffer() {
+        val report = diagnostics ?: return
         val pending = buffer.count
         val ram = buffer.ramBytes
         val disk = buffer.diskBytes
-        push { it.copy(pendingMessages = pending, ramBytes = ram, diskBytes = disk) }
+        report.update {
+            pendingMessages = pending
+            ramBytes = ram
+            flashBytes = disk
+        }
     }
 
     private companion object {
         const val TAG = "SpotflowGateway"
         const val INITIAL_BACKOFF_MS = 1_000L
         const val MAX_BACKOFF_MS = 30_000L
+        const val AUTH_RETRY_INITIAL_MS = 60_000L
+        const val AUTH_RETRY_MAX_MS = 15 * 60_000L
         const val MAX_PUBLISH_ATTEMPTS = 5
         const val MAX_PUBLISH_ATTEMPTS_WITH_DISCONNECT = 10
         const val IDLE_POLL_MS = 15_000L
@@ -564,10 +605,6 @@ internal class CloudLink(
         /** Session-metadata messages tracked in the buffer at most (one per BLE session in it). */
         const val MAX_TRACKED_METADATA = 64
 
-        /** Errors that a working cloud connection disproves (as opposed to Bluetooth-side ones). */
-        fun isCloudError(error: DeviceError): Boolean =
-            error.kind == DeviceError.Kind.CLOUD_UNREACHABLE || error.kind == DeviceError.Kind.AUTH_REJECTED
-
         fun Throwable.describe(): String = message ?: javaClass.simpleName
     }
 }
@@ -580,27 +617,40 @@ private class InboundQueue {
     class Entry(val payload: ByteArray, ack: () -> Unit) {
         /** One per delivery by the broker: it sends an unacknowledged message again on every reconnect. */
         val acks = arrayListOf(ack)
-        var failures = 0
     }
 
     private val entries = ArrayDeque<Entry>()
     private val signal = Channel<Unit>(Channel.CONFLATED)
 
+    /**
+     * Where the broker's redelivery has got to: the index of the queued message it resends next. On a new
+     * connection it resends every unacknowledged message, in order and before anything new — which is
+     * what the queue holds, in the same order.
+     */
+    private var redelivered = 0
+
     val isEmpty: Boolean get() = synchronized(this) { entries.isEmpty() }
 
+    /** A new connection is being made: the broker is about to resend the queued messages, from the oldest. */
+    fun expectRedelivery() = synchronized(this) { redelivered = 0 }
+
     /**
-     * Queues [payload]. The same payload as the last one waiting — what the broker sends on every reconnect
-     * while a message is unacknowledged — joins it instead of queueing up behind it. Returns how many are
-     * waiting, or null if it joined.
+     * Queues [payload] — unless it is the broker resending a message that is queued already, which then
+     * joins it: the queued message next in line for redelivery, or (outside a redelivery) the last one
+     * waiting. A message that matches neither is new, even if an older one has the same payload (e.g. a
+     * setting changed and then changed back). Returns how many are waiting, or null if it joined.
      */
     fun offer(payload: ByteArray, ack: () -> Unit): Int? {
         val queued = synchronized(this) {
-            val last = entries.lastOrNull()
-            if (last != null && last.payload.contentEquals(payload)) {
-                last.acks += ack
+            val resent = entries.getOrNull(redelivered)?.takeIf { it.payload.contentEquals(payload) }
+                ?: entries.lastOrNull()?.takeIf { it.payload.contentEquals(payload) }
+            if (resent != null) {
+                resent.acks += ack
+                redelivered = entries.indexOf(resent) + 1
                 null
             } else {
                 entries.addLast(Entry(payload, ack))
+                redelivered = entries.size // anything new ends the redelivery
                 entries.size
             }
         }
@@ -622,6 +672,7 @@ private class InboundQueue {
         val acks = synchronized(this) {
             check(entries.firstOrNull() === entry) { "not the oldest message" }
             entries.removeFirst()
+            if (redelivered > 0) redelivered--
             entry.acks.toList()
         }
         acks.forEach { it() }
@@ -635,11 +686,12 @@ private class InboundQueue {
  */
 internal class CloudLinkRegistry(
     private val scope: CoroutineScope,
-    private val createLink: (deviceId: String, push: StatusPush) -> CloudLink,
+    private val createLink: (deviceId: String, diagnostics: DeviceDiagnostics?, credential: DeviceIngestCredential?) -> CloudLink,
 ) {
     private class Lingering(val link: CloudLink) {
         lateinit var job: Job
         var handedOver = false
+        var closing = false
     }
 
     private val lock = Any()
@@ -654,44 +706,74 @@ internal class CloudLinkRegistry(
      * buffer) or creates a new one. Throws [DuplicateDeviceException] if another session holds it — or is
      * just claiming it: the ID is reserved before the hand-over starts, so two sessions can't both win.
      */
-    suspend fun claim(deviceId: String, push: StatusPush): CloudLink {
+    suspend fun claim(
+        deviceId: String,
+        diagnostics: DeviceDiagnostics?,
+        credential: DeviceIngestCredential? = null,
+    ): CloudLink {
         val handover = synchronized(lock) {
             if (deviceId in claimed || !claiming.add(deviceId)) throw DuplicateDeviceException(deviceId)
-            lingering.remove(deviceId)?.also { it.handedOver = true }
+            lingering[deviceId]?.also {
+                if (!it.closing) {
+                    lingering.remove(deviceId)
+                    it.handedOver = true
+                }
+            }
         }
+        val stoppedLink = handover?.takeIf { it.handedOver }?.link
+        var oldClosed = false
         try {
-            handover?.job?.cancelAndJoin() // stops its drain loop; handedOver keeps the link open
-            val link = handover?.link?.also { it.push = push } ?: createLink(deviceId, push)
+            if (stoppedLink != null) handover.job.cancelAndJoin() else handover?.job?.join()
+            // A rotated key may belong to a different workspace. Disconnect the old uplink and park
+            // its backlog before creating a client for this ID with the new credential.
+            val reusable = stoppedLink?.takeIf { credential == null || it.queueId == credential.queueId }
+            if (reusable == null && stoppedLink != null) {
+                stoppedLink.close()
+                oldClosed = true
+            }
+            val link = reusable?.also { it.diagnostics = diagnostics } ?: createLink(deviceId, diagnostics, credential)
             synchronized(lock) {
                 claiming -= deviceId
                 claimed[deviceId] = link
             }
             return link
         } catch (t: Throwable) {
-            synchronized(lock) { claiming -= deviceId }
-            handover?.link?.close()
+            try {
+                if (stoppedLink != null && !oldClosed) withContext(NonCancellable) {
+                    handover.job.cancelAndJoin()
+                    stoppedLink.close()
+                }
+            } finally {
+                synchronized(lock) { claiming -= deviceId }
+            }
             throw t
         }
     }
 
     /**
-     * Ends a session's claim. Unless the key was rejected, the link lingers and keeps uploading until its
+     * Ends a session's claim. The link lingers and keeps uploading until its
      * buffer is empty, then closes. Must be called from a non-cancellable context, and only once nothing
      * of the session uses the link any more (its drain loop in particular: a link has one consumer).
      */
     suspend fun release(link: CloudLink) {
         val lingerJob = synchronized(lock) {
-            claimed.remove(link.deviceId)
-            if (link.authRejected || !scope.isActive) null else startLinger(link)
+            if (!scope.isActive || (link.authRejected && link.isEmpty)) null else {
+                claimed.remove(link.deviceId)
+                startLinger(link)
+            }
         }
-        if (lingerJob == null) link.close()
+        if (lingerJob == null) try {
+            link.close()
+        } finally {
+            synchronized(lock) { claimed.remove(link.deviceId) }
+        }
     }
 
     /** Starts draining a buffer left on disk by an earlier run, unless the device already has a link. */
     fun recover(deviceId: String) {
         synchronized(lock) {
             if (deviceId in claimed || deviceId in claiming || deviceId in lingering || !scope.isActive) return
-            startLinger(createLink(deviceId) {})
+            startLinger(createLink(deviceId, null, null))
         }
     }
 
@@ -714,10 +796,15 @@ internal class CloudLinkRegistry(
                 Slog.w("SpotflowGateway", "background upload for ${link.deviceId} stopped: ${t.message}")
             } finally {
                 val close = synchronized(lock) {
-                    if (lingering[link.deviceId] === entry) lingering.remove(link.deviceId)
+                    // Keep the entry visible until close completes so a new claim cannot race it.
+                    entry.closing = !entry.handedOver
                     !entry.handedOver
                 }
-                if (close) link.close()
+                if (close) try {
+                    link.close()
+                } finally {
+                    synchronized(lock) { if (lingering[link.deviceId] === entry) lingering.remove(link.deviceId) }
+                }
             }
         }
         return entry.job

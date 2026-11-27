@@ -1,10 +1,6 @@
 package io.spotflow.ble
 
-import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,71 +9,44 @@ import android.net.ConnectivityManager
 import android.net.Network
 import androidx.core.content.ContextCompat
 import io.spotflow.ble.cloud.CredentialsProvider
+import io.spotflow.ble.cloud.DeviceIngestCredential
 import io.spotflow.ble.cloud.MqttConfig
 import io.spotflow.ble.cloud.MqttUplink
+import io.spotflow.ble.cloud.StaticIngestKey
 import io.spotflow.ble.cloud.Uplink
 import io.spotflow.ble.ota.ArtifactDownloader
 import io.spotflow.ble.ota.HttpArtifactDownloader
-import io.spotflow.ble.transport.BleConnection
-import io.spotflow.ble.transport.ManagedBleConnection
-import io.spotflow.ble.transport.SpotflowScanner
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.map
-
-/** A device found by scanning, and how to connect to it. */
-internal class DiscoveredDevice(
-    val address: String,
-    /** Opens a connection; `autoConnect` lets Android re-attach whenever the device reappears. */
-    val connect: (autoConnect: Boolean) -> BleConnection,
-)
 
 /**
  * Everything [SpotflowGateway] needs from Android and from the network, behind one seam: the Bluetooth
- * adapter and scanner, GATT connections, connectivity, and the MQTT client. The gateway's own logic —
- * who is connected, when to retry, what to report — sits on top of it and is tested against a fake.
+ * adapter, connectivity, and the MQTT client. The gateway's own logic — what is attached, what to
+ * report — sits on top of it and is tested against a fake.
  */
 internal interface GatewayPlatform {
-    val isBluetoothEnabled: Boolean
-
     /** Whether the phone has a network. Stays `true` if that cannot be observed. */
     val online: StateFlow<Boolean>
 
     /** Starts watching the Bluetooth adapter and the network. */
-    fun start(onBluetoothOff: () -> Unit, onBluetoothOn: () -> Unit)
+    fun start(onBluetoothOff: () -> Unit)
 
     fun stop()
 
-    /**
-     * Devices advertising the Spotflow service, for as long as the flow is collected. Fails if the scan
-     * cannot be started or stops working.
-     */
-    fun scan(lowPower: Boolean): Flow<DiscoveredDevice>
-
-    fun createUplink(deviceId: String): Uplink
+    fun createUplink(deviceId: String, deviceCredential: DeviceIngestCredential?): Uplink
 
     /** Downloads OTA artifacts. */
     val artifactDownloader: ArtifactDownloader get() = HttpArtifactDownloader()
-
-    /** Whether [device] has a GATT link up right now (attach mode). */
-    fun isGattConnected(device: BluetoothDevice): Boolean
 }
 
 internal class AndroidGatewayPlatform(
     private val appContext: Context,
-    private val credentials: CredentialsProvider,
+    private val credentials: CredentialsProvider?,
     private val mqttConfig: MqttConfig,
-    private val requestedMtu: Int,
 ) : GatewayPlatform {
-
-    private val bluetoothManager: BluetoothManager?
-        get() = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
 
     private val network = NetworkMonitor(appContext)
 
-    override val isBluetoothEnabled: Boolean get() = bluetoothManager?.adapter?.isEnabled == true
     override val online: StateFlow<Boolean> get() = network.online
 
     private var bluetoothReceiver: BroadcastReceiver? = null
@@ -85,18 +54,16 @@ internal class AndroidGatewayPlatform(
     /**
      * Watches the Bluetooth adapter itself. Turning Bluetooth off often does not deliver a GATT
      * disconnect callback, which would otherwise leave sessions parked forever; observing the adapter
-     * lets the gateway tear those sessions down and rediscover once Bluetooth returns — even with the
-     * screen off / app backgrounded, since the gateway runs in a foreground service.
+     * lets the gateway end those sessions.
      */
     @Synchronized
-    override fun start(onBluetoothOff: () -> Unit, onBluetoothOn: () -> Unit) {
+    override fun start(onBluetoothOff: () -> Unit) {
         if (bluetoothReceiver != null) return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
                 when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                     BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> onBluetoothOff()
-                    BluetoothAdapter.STATE_ON -> onBluetoothOn()
                 }
             }
         }
@@ -117,23 +84,8 @@ internal class AndroidGatewayPlatform(
         network.stop()
     }
 
-    override fun scan(lowPower: Boolean): Flow<DiscoveredDevice> {
-        val adapter = bluetoothManager?.adapter
-            ?: return flow { throw IllegalStateException("this device has no Bluetooth") }
-        return SpotflowScanner(adapter).scan(lowPower).map { device ->
-            DiscoveredDevice(device.address) { autoConnect ->
-                ManagedBleConnection(appContext, device, requestedMtu, autoConnect)
-            }
-        }
-    }
-
-    override fun createUplink(deviceId: String): Uplink = MqttUplink(deviceId, credentials, mqttConfig)
-
-    // The host is responsible for holding BLUETOOTH_CONNECT (documented in the README/manifest).
-    @SuppressLint("MissingPermission")
-    override fun isGattConnected(device: BluetoothDevice): Boolean = runCatching {
-        bluetoothManager?.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
-    }.getOrDefault(false)
+    override fun createUplink(deviceId: String, deviceCredential: DeviceIngestCredential?): Uplink =
+        MqttUplink(deviceId, deviceCredential?.let { StaticIngestKey(it.key) } ?: checkNotNull(credentials), mqttConfig)
 }
 
 /**

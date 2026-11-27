@@ -81,13 +81,13 @@ internal class MqttUplink(
         val current = readySession()
         // Before the SUBACK: the broker may hold the subscription even if the answer never arrives.
         mayHoldOtaSubscription = true
-        current.subscribe(config.topics.otaCommands)
+        current.subscribe(SpotflowTopics.OTA_COMMANDS)
         current.otaSubscribed = true
     }
 
     override suspend fun unsubscribeOta() {
         val current = readySession()
-        current.unsubscribe(config.topics.otaCommands)
+        current.unsubscribe(SpotflowTopics.OTA_COMMANDS)
         current.otaSubscribed = false
         mayHoldOtaSubscription = false
     }
@@ -95,11 +95,7 @@ internal class MqttUplink(
     private fun readySession(): ClientSession =
         session.takeIf { it.isReady } ?: throw UplinkDisconnectedException("MQTT is not connected", rejectedByBroker = false)
 
-    private val qos: MqttQos = when (config.qos) {
-        PublishQos.AT_MOST_ONCE -> MqttQos.AT_MOST_ONCE
-        PublishQos.AT_LEAST_ONCE -> MqttQos.AT_LEAST_ONCE
-        PublishQos.EXACTLY_ONCE -> MqttQos.EXACTLY_ONCE
-    }
+    private val qos = MqttQos.AT_LEAST_ONCE
 
     @Volatile
     private var session = ClientSession()
@@ -201,7 +197,7 @@ internal class MqttUplink(
             // when it ends — and discard() needs to know that.
             pending.await(cancelFuture = false)
 
-            subscribe(config.topics.desiredConfiguration)
+            subscribe(SpotflowTopics.DESIRED_CONFIGURATION)
             ready = true
         }
 
@@ -299,7 +295,8 @@ internal class MqttUplink(
             ready = false
             val rejected = context.source == MqttDisconnectSource.SERVER && !isBrokersOwnReason(context.cause)
             lost.complete(rejected)
-            Slog.w(TAG, "MQTT disconnected for $deviceId: ${context.cause.message}")
+            val reason = (context.cause as? Mqtt5DisconnectException)?.mqttMessage?.reasonCode
+            Slog.w(TAG, "MQTT disconnected for $deviceId (${reason?.name ?: context.source.name})")
             if (wasReady && this === session) onConnectionLost?.invoke()
         }
 
@@ -313,8 +310,8 @@ internal class MqttUplink(
             if (this !== session) return // a discarded client: leave it unacknowledged for the live one
             val topic = publish.topic.toString()
             val (kind, handler) = when {
-                isTopicOrBelow(config.topics.desiredConfiguration, topic) -> "desired configuration" to desiredConfigurationHandler
-                isTopicOrBelow(config.topics.otaCommands, topic) -> "OTA command" to otaCommandHandler
+                isTopicOrBelow(SpotflowTopics.DESIRED_CONFIGURATION, topic) -> "desired configuration" to desiredConfigurationHandler
+                isTopicOrBelow(SpotflowTopics.OTA_COMMANDS, topic) -> "OTA command" to otaCommandHandler
                 else -> {
                     Slog.w(TAG, "ignoring message for $deviceId on unexpected topic '$topic'")
                     runCatching { publish.acknowledge() } // nothing to deliver; don't leave it pending
@@ -334,15 +331,12 @@ internal class MqttUplink(
         val connAck = generateSequence(error) { it.cause }
             .filterIsInstance<Mqtt5ConnAckException>()
             .firstOrNull()
-            ?: return MqttConnectException(error.message ?: "MQTT connection failed", error)
+            ?: return MqttConnectException("MQTT connection failed (${error.javaClass.simpleName})")
 
         val ack = connAck.mqttMessage
         val reasonCode = ack.reasonCode
-        val reasonString = ack.reasonString.map { it.toString() }.orElse(null)
-        val detail = buildString {
-            append(reasonCode.name)
-            if (!reasonString.isNullOrBlank()) append(": ").append(reasonString)
-        }
+        // Don't expose broker-provided text or client exceptions from an attempt using a secret.
+        val detail = reasonCode.name
 
         return when (reasonCode) {
             Mqtt5ConnAckReasonCode.BAD_USER_NAME_OR_PASSWORD,
@@ -351,7 +345,7 @@ internal class MqttUplink(
             ->
                 MqttAuthException("Broker rejected the ingest key ($detail)")
             else ->
-                MqttConnectException("Broker refused the connection ($detail)", error)
+                MqttConnectException("Broker refused the connection ($detail)")
         }
     }
 

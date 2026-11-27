@@ -24,17 +24,19 @@ import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import io.spotflow.ble.AttachmentState
 import io.spotflow.ble.DeviceError
-import io.spotflow.ble.GatewayDeviceState
-import io.spotflow.ble.OtaTransfer
-import io.spotflow.ble.GatewayStatus
-import io.spotflow.ble.ScanState
-import io.spotflow.ble.cloud.BufferUsage
-import io.spotflow.ble.service.SpotflowGatewayService
-import io.spotflow.ble.transport.ConnectionState
+import io.spotflow.ble.diagnostics.BufferUsage
+import io.spotflow.ble.diagnostics.DeviceReport
+import io.spotflow.ble.diagnostics.FirmwareTransfer
+import io.spotflow.ble.diagnostics.GatewayReport
+import io.spotflow.ble.managed.ScanState
+import io.spotflow.ble.managed.ScanStatus
+import io.spotflow.ble.managed.SpotflowGatewayService
 import io.spotflow.gateway.demo.databinding.ActivityMainBinding
 import io.spotflow.gateway.demo.databinding.ItemDeviceBinding
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -55,8 +57,8 @@ class MainActivity : AppCompatActivity() {
     private val collapsed = mutableSetOf<String>()
 
     /** What the gateway last reported, kept so each part of the screen can be redrawn from all of it. */
-    private var gatewayStatus = GatewayStatus()
-    private var shownDevices: List<GatewayDeviceState> = emptyList()
+    private var scanStatus: ScanStatus? = null
+    private var shownDevices: List<DeviceReport> = emptyList()
     private var shownUsage: BufferUsage? = null
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
@@ -249,7 +251,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showIdle() {
-        gatewayStatus = GatewayStatus()
+        scanStatus = null
         shownUsage = null
         render(emptyList())
         binding.status.text = idleText()
@@ -262,16 +264,13 @@ class MainActivity : AppCompatActivity() {
         shownUsage = usage
         val ram = humanBytes(usage.ramBytes)
         val ramMax = limitText(usage.ramMaxBytes)
-        val summary = if (usage.flashMaxBytes > 0) {
+        binding.bufferSummary.text = if (usage.flashMaxBytes > 0 && usage.flashAvailable) {
             getString(R.string.buffer_summary, ram, ramMax, humanBytes(usage.flashBytes), limitText(usage.flashMaxBytes))
         } else {
             getString(R.string.buffer_summary_ram_only, ram, ramMax)
         }
-        // Without a network nothing is uploaded: say so next to the buffer that is filling up.
-        binding.bufferSummary.text =
-            if (gatewayStatus.online) summary else getString(R.string.buffer_summary_offline, summary)
         val nearlyFull = usage.ramBytes > usage.ramMaxBytes * 0.8 ||
-            (usage.flashMaxBytes > 0 && usage.flashBytes > usage.flashMaxBytes * 0.8)
+            (usage.flashMaxBytes > 0 && usage.flashAvailable && usage.flashBytes > usage.flashMaxBytes * 0.8)
         binding.bufferSummary.setTextColor(
             if (nearlyFull) {
                 ContextCompat.getColor(this, R.color.status_pending)
@@ -281,6 +280,7 @@ class MainActivity : AppCompatActivity() {
         )
         binding.bufferSummary.alpha = if (nearlyFull) 1f else 0.7f
         binding.bufferSummary.isVisible = true
+        renderProblems()
     }
 
     /** Enables Start/Stop to match whether the gateway is running. */
@@ -292,35 +292,38 @@ class MainActivity : AppCompatActivity() {
     private fun observeDevices() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                // The service creates a fresh gateway on each Start and Restart; collectLatest drops the
-                // previous one's flows and follows the new one (otherwise the UI would keep mirroring a
-                // gateway that was shut down).
-                SpotflowGatewayService.gatewayFlow.collectLatest { gateway ->
+                // Follow the current gateway, cancelling its scan observer and reporting loop on restart.
+                SpotflowGatewayService.gatewayFlow.collectLatest { managed ->
                     updateSettingsBanner() // a new gateway was built from the saved settings
-                    if (gateway == null) return@collectLatest
+                    if (managed == null) return@collectLatest
                     coroutineScope {
-                        launch { gateway.status.collect { renderStatus(it) } }
-                        launch { gateway.devices.collect { render(it.values.toList()) } }
-                        launch { gateway.bufferUsage.collect { renderUsage(it) } }
+                        launch { managed.scanStatus.collect { renderScan(it) } }
+                        var previous: GatewayReport? = null
+                        while (true) {
+                            val report = managed.diagnosticsSnapshot()
+                            if (report.bufferUsage != previous?.bufferUsage) renderUsage(report.bufferUsage)
+                            if (report.devices != previous?.devices) render(report.devices)
+                            previous = report
+                            delay(1_000)
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun renderStatus(status: GatewayStatus) {
-        gatewayStatus = status
+    private fun renderScan(status: ScanStatus) {
+        scanStatus = status
         binding.status.text = scanText()
         renderProblems()
-        shownUsage?.let(::renderUsage)
     }
 
     /** What discovery is doing — shown while there are no devices to show instead. */
-    private fun scanText(): String = when (gatewayStatus.scan) {
+    private fun scanText(): String = when (scanStatus?.state) {
         ScanState.SCANNING -> getString(R.string.scanning)
         ScanState.WAITING_FOR_BLUETOOTH -> getString(R.string.status_bluetooth_off)
-        ScanState.RETRYING -> getString(R.string.status_scan_retrying, gatewayStatus.scanError.orEmpty())
-        ScanState.STOPPED -> getString(R.string.status_starting)
+        ScanState.RETRYING -> getString(R.string.status_scan_retrying, scanStatus?.error.orEmpty())
+        ScanState.STOPPED, null -> getString(R.string.status_starting)
     }
 
     /**
@@ -328,21 +331,22 @@ class MainActivity : AppCompatActivity() {
      * keeps the gateway as a whole from doing its job.
      */
     private fun renderProblems() {
-        val deviceError = shownDevices.firstNotNullOfOrNull { it.error }
+        val deviceError = shownDevices.firstNotNullOfOrNull { it.displayError }
         val problem = when {
             deviceError?.kind == DeviceError.Kind.AUTH_REJECTED ->
                 getString(R.string.problem_with_hint, deviceError.message, getString(R.string.auth_hint))
             deviceError != null -> getString(R.string.problem, deviceError.message)
-            gatewayStatus.scan == ScanState.RETRYING ->
-                getString(R.string.problem, getString(R.string.status_scan_retrying, gatewayStatus.scanError.orEmpty()))
-            !gatewayStatus.storageAvailable -> getString(R.string.problem, getString(R.string.storage_unavailable))
+            scanStatus?.state == ScanState.RETRYING ->
+                getString(R.string.problem, getString(R.string.status_scan_retrying, scanStatus?.error.orEmpty()))
+            shownUsage?.let { !it.flashAvailable && it.flashMaxBytes > 0 } == true ->
+                getString(R.string.problem, getString(R.string.storage_unavailable))
             else -> null
         }
         binding.errorBanner.text = problem
         binding.errorBanner.isVisible = problem != null
     }
 
-    private fun render(devices: List<GatewayDeviceState>) {
+    private fun render(devices: List<DeviceReport>) {
         shownDevices = devices
         binding.status.isVisible = devices.isEmpty()
         binding.status.text = scanText()
@@ -390,10 +394,10 @@ class MainActivity : AppCompatActivity() {
      * The device name led by a status marker: green ● when relaying (BLE ready and MQTT connected),
      * amber … while connecting or offline, red ✗ on an error. Glyphs differ too, not just colors.
      */
-    private fun deviceTitle(d: GatewayDeviceState): CharSequence {
+    private fun deviceTitle(d: DeviceReport): CharSequence {
         val (marker, color) = when {
-            d.error != null -> "✗" to R.color.status_error
-            d.cloudConnected && d.ble == ConnectionState.READY -> "●" to R.color.status_ok
+            d.displayError != null -> "✗" to R.color.status_error
+            d.cloudConnected && d.attachmentState is AttachmentState.Ready -> "●" to R.color.status_ok
             else -> "…" to R.color.status_pending
         }
         return SpannableString("$marker ${d.deviceId ?: d.address}").apply {
@@ -406,42 +410,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun formatDetails(d: GatewayDeviceState): String {
-        val cloud = if (d.cloudConnected) "connected" else "offline"
+    private fun formatDetails(d: DeviceReport): String {
+        val cloud = if (d.cloudConnected) "connected" else "disconnected"
+        val relay = when (d.attachmentState) {
+            AttachmentState.Starting -> "STARTING"
+            is AttachmentState.Ready -> "READY"
+            is AttachmentState.Ended -> "NOT_ATTACHED"
+        }
         fun line(label: String, value: String) = "    ${"$label:".padEnd(17)}$value"
-        // Only show a live signal reading while actually connected — otherwise it would keep
-        // displaying the last RSSI next to "DISCONNECTED", which reads as contradictory.
-        val signal = d.rssi?.takeIf { d.ble == ConnectionState.READY }
-            ?.let { "$it dBm · ${signalQuality(it)}" } ?: "—"
         return buildString {
-            appendLine(line("BLE device", d.ble.toString()))
-            appendLine(line("Signal", signal))
+            appendLine(line("BLE relay", relay))
             appendLine(line("MQTT connection", cloud))
             appendLine(line("Forwarded", "${d.forwarded} msgs"))
-            appendLine(line("Received", "${d.received} msgs"))
+            appendLine(line("Received", "${d.cloudMessagesReceived} msgs"))
             // Messages not yet uploaded; where they sit (RAM or flash) is shown for the whole gateway above.
-            append(line("Waiting", "${d.pendingMessages} msgs · ${humanBytes(d.ramBytes + d.diskBytes)}"))
+            append(line("Waiting", "${d.pendingMessages} msgs · ${humanBytes(d.ramBytes + d.flashBytes)}"))
             if (d.otaEnabled) {
                 appendLine()
-                append(line("OTA update", otaText(d.otaTransfer)))
+                append(line("Firmware transfer", otaText(d.activeFirmwareTransfer)))
             }
         }
     }
 
-    private fun otaText(transfer: OtaTransfer?): String {
+    private val DeviceReport.displayError: DeviceError?
+        get() = (attachmentState as? AttachmentState.Ended)?.result?.error ?: cloudError
+
+    private fun otaText(transfer: FirmwareTransfer?): String {
         val size = transfer?.sizeBytes
         return when {
             transfer == null -> "idle"
             size == null -> "downloading firmware…"
-            else -> "${transfer.deliveredBytes * 100 / size}% · ${humanBytes(transfer.deliveredBytes)} of ${humanBytes(size)}"
+            else -> "${transfer.lastReadEndOffsetBytes * 100 / size}% · ${humanBytes(transfer.lastReadEndOffsetBytes)} of ${humanBytes(size)}"
         }
-    }
-
-    private fun signalQuality(rssi: Int): String = when {
-        rssi >= -60 -> "strong"
-        rssi >= -75 -> "good"
-        rssi >= -85 -> "weak"
-        else -> "very weak"
     }
 
     /** A configured limit: whole megabytes as set in Settings (e.g. "50 MB"). */

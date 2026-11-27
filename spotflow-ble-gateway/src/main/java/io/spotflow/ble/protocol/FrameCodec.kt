@@ -32,17 +32,25 @@ internal object FrameCodec {
     const val HEADER_CONTINUATION = 3
 
     /** ATT protocol overhead: 3 bytes of every ATT payload are the opcode + handle. */
-    private const val ATT_OVERHEAD = 3
+    const val ATT_OVERHEAD = 3
 
     /** Smallest MTU the BLE spec guarantees. */
     const val MIN_MTU = 23
 
+    /** The smallest frame: what the smallest MTU leaves for a value. */
+    const val MIN_FRAME_BYTES = MIN_MTU - ATT_OVERHEAD
+
+    /** The largest frame: the protocol's limit on a GATT value, whatever MTU was negotiated. */
+    const val MAX_FRAME_BYTES = 512
+
     const val MAX_MESSAGE_LENGTH = 0xFFFF
 
     /**
-     * Splits [payload] of the given [type] into wire frames that each fit within [mtu].
+     * Splits [payload] of the given [type] into wire frames of at most [frameSize] bytes, which is taken
+     * into [MIN_FRAME_BYTES]..[MAX_FRAME_BYTES].
      *
      * @param seq message sequence number (0..255), shared by every fragment of this message.
+     * @param frameSize the largest value one write carries: the ATT MTU minus [ATT_OVERHEAD].
      * @param needsAck sets [FLAG_NEEDS_ACK] in every fragment: the receiver answers with an ACK or NACK.
      * @return the ordered list of frames to write to the RX Stream characteristic. An empty payload
      *   still produces exactly one frame flagged both first and last.
@@ -51,7 +59,7 @@ internal object FrameCodec {
         type: MessageType,
         payload: ByteArray,
         seq: Int,
-        mtu: Int,
+        frameSize: Int,
         needsAck: Boolean = false,
     ): List<ByteArray> {
         require(payload.size <= MAX_MESSAGE_LENGTH) {
@@ -59,10 +67,9 @@ internal object FrameCodec {
         }
         require(seq in 0..0xFF) { "seq $seq out of range 0..255" }
 
-        val attPayload = maxOf(mtu, MIN_MTU) - ATT_OVERHEAD
-        val firstCapacity = attPayload - HEADER_FIRST
-        val continuationCapacity = attPayload - HEADER_CONTINUATION
-        require(firstCapacity > 0 && continuationCapacity > 0) { "mtu $mtu too small to frame a message" }
+        val frameBytes = frameSize.coerceIn(MIN_FRAME_BYTES, MAX_FRAME_BYTES)
+        val firstCapacity = frameBytes - HEADER_FIRST
+        val continuationCapacity = frameBytes - HEADER_CONTINUATION
 
         val total = payload.size
         val frames = ArrayList<ByteArray>()

@@ -5,31 +5,11 @@ import io.spotflow.ble.protocol.Message
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
-/** Lifecycle state of a single BLE connection to a Spotflow device. */
-public enum class ConnectionState {
-    /** Not connected (initial state, or after the session ended). */
-    DISCONNECTED,
-
-    /** GATT link is being established. */
-    CONNECTING,
-
-    /** Discovering services / negotiating MTU / reading characteristics. */
-    PREPARING,
-
-    /** Ready: notifications enabled, characteristics resolved, messages flowing. */
-    READY,
-
-    /** Terminal failure for this attempt; a managed connection is retried. */
-    FAILED,
-}
-
 /**
- * A transport to one Spotflow device that exposes the framed message streams, independent of whether
- * the library owns the BLE connection ([ManagedBleConnection]) or attaches to one the host app already
- * holds ([AttachedBleConnection]).
+ * A transport to one Spotflow device that exposes the framed message streams, over a connection the
+ * host app owns: a [LinkConnection] over a `BleLink`.
  *
- * All suspend functions serialize onto the single GATT operation queue; only one GATT operation is ever
- * outstanding at a time.
+ * Only one call to the device is ever waited for at a time.
  */
 internal interface BleConnection {
 
@@ -39,33 +19,32 @@ internal interface BleConnection {
     /** Observable connection state. */
     val state: StateFlow<ConnectionState>
 
+    /** True if physical link loss was reported, not just if the relay stopped. */
+    val linkLost: Boolean get() = false
+
+    /** Why the connection failed, once [state] is [ConnectionState.FAILED]. */
+    val failure: Throwable? get() = null
+
     /** Reassembled messages arriving on the TX Stream (device -> gateway). */
     val incoming: Flow<Message>
 
-    /** The negotiated ATT MTU, or 23 before negotiation completes. */
-    val mtu: Int
-
-    /**
-     * Establishes the link: for managed connections this connects the GATT; for attached connections it
-     * uses the host-provided GATT. In both cases it discovers services and negotiates MTU. Messages only
-     * start flowing after [startStreaming].
-     */
+    /** Starts using the link. Messages only start flowing after [startStreaming]. */
     suspend fun prepare()
 
     /** Reads the Capabilities characteristic: protocol version and feature bits. */
     suspend fun readCapabilities(): DeviceCapabilities
 
-    /** Enables TX Stream notifications; [state] then reaches [ConnectionState.READY]. */
+    /** Enables TX Stream notifications; [state] then reaches [ConnectionState.STREAMING]. */
     suspend fun startStreaming()
 
     /** Reads the device ID (MQTT username) from the Device ID characteristic. */
     suspend fun readDeviceId(): String
 
+    /** Reads the complete raw Ingest Key characteristic. Only used in device-key mode. */
+    suspend fun readIngestKey(): ByteArray
+
     /** Reads the CBOR session-metadata characteristic. */
     suspend fun readSessionMetadata(): ByteArray
-
-    /** Reads the current connection signal strength (RSSI, in dBm). */
-    suspend fun readRssi(): Int
 
     /** Fragments and writes a DESIRED_CONFIGURATION payload to the RX Stream. */
     suspend fun sendDesiredConfiguration(payload: ByteArray)
@@ -80,9 +59,10 @@ internal interface BleConnection {
     suspend fun sendArtifactResponse(payload: ByteArray)
 
     /**
-     * Releases the transport. A managed connection disconnects and closes the GATT; an attached
-     * connection turns the device's TX stream off, stops using the GATT and leaves the host to own
-     * disconnection. Call from a non-cancellable context.
+     * Releases the transport: turns the device's TX stream off and stops using the link, leaving the
+     * host to own disconnection. Call from a non-cancellable context.
      */
     suspend fun close()
 }
+
+internal enum class ConnectionState { IDLE, PREPARING, STREAMING, FAILED }

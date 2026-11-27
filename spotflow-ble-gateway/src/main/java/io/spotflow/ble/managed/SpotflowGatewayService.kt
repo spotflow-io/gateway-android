@@ -1,4 +1,4 @@
-package io.spotflow.ble.service
+package io.spotflow.ble.managed
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -11,19 +11,17 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import io.spotflow.ble.Slog
-import io.spotflow.ble.SpotflowGateway
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * A foreground service that hosts a [SpotflowGateway] so relaying continues while the app is backgrounded
+ * A foreground service that hosts a [ManagedGateway] so relaying continues while the app is backgrounded
  * or the screen is off. It runs with foreground service type `connectedDevice` and a persistent
  * notification, as Android requires for long-lived BLE work.
  *
  * The host app configures it before starting:
  * ```
- * SpotflowGatewayService.gatewayFactory = { ctx -> SpotflowGateway(ctx, StaticIngestKey(key), filter) }
+ * SpotflowGatewayService.gatewayFactory = { ctx -> ManagedGateway(ctx, StaticIngestKey(key), filter) }
  * SpotflowGatewayService.onReady = { gateway -> gateway.startScanning() }
  * SpotflowGatewayService.start(context)
  * ```
@@ -32,8 +30,8 @@ import kotlinx.coroutines.flow.StateFlow
  * [gatewayFactory] and [onReady] from `Application.onCreate()` (which runs first in the new process)
  * whenever the gateway should be running; otherwise the restarted service just stops itself.
  *
- * Host apps that already run their own foreground service (e.g. in attach mode) can skip this class and
- * hold a [SpotflowGateway] directly.
+ * Apps that attach their own connections to a `SpotflowGateway` run it from a foreground service of their
+ * own; this one is for the managed gateway.
  */
 public class SpotflowGatewayService : Service() {
 
@@ -47,7 +45,7 @@ public class SpotflowGatewayService : Service() {
         } catch (e: RuntimeException) {
             // e.g. Android 14+ refuses a connectedDevice service once Bluetooth permissions were revoked
             // (possible on a START_STICKY restart). Stop instead of crashing the host app.
-            Slog.w(TAG, "cannot enter foreground: ${e.message}; stopping self")
+            ManagedLog.w("cannot enter foreground: ${e.message}; stopping self")
             stopSelf()
             return
         }
@@ -56,7 +54,7 @@ public class SpotflowGatewayService : Service() {
         if (factory == null) {
             // The process was likely killed and restarted by the system (START_STICKY): the static
             // factory is gone. Stop gracefully rather than crashing; the host re-creates it on next start.
-            Slog.w(TAG, "gatewayFactory not set (process restarted?); stopping self")
+            ManagedLog.w("gatewayFactory not set (process restarted?); stopping self")
             stopSelf()
             return
         }
@@ -76,18 +74,18 @@ public class SpotflowGatewayService : Service() {
      */
     private fun restartGateway() {
         val factory = gatewayFactory ?: return
-        Slog.i(TAG, "restarting the gateway")
+        ManagedLog.i("restarting the gateway")
         _gateway.value?.shutdown()
         _gateway.value = null
         createGateway(factory)
     }
 
-    private fun createGateway(factory: (Context) -> SpotflowGateway) {
+    private fun createGateway(factory: (Context) -> ManagedGateway) {
         val instance = try {
             factory(this)
         } catch (e: RuntimeException) {
             // The host's factory failed. Without a gateway there is nothing to keep running.
-            Slog.e(TAG, "gatewayFactory failed; stopping self", e)
+            ManagedLog.e("gatewayFactory failed; stopping self", e)
             stopSelf()
             return
         }
@@ -128,14 +126,13 @@ public class SpotflowGatewayService : Service() {
     }
 
     public companion object {
-        private const val TAG = "SpotflowGateway"
         public const val CHANNEL_ID: String = "spotflow_gateway"
         private const val NOTIFICATION_ID = 4711
         private const val ACTION_RESTART = "io.spotflow.ble.action.RESTART_GATEWAY"
 
-        /** Builds the [SpotflowGateway] the service will host. Required. */
+        /** Builds the [ManagedGateway] the service will host. Required. */
         @Volatile
-        public var gatewayFactory: ((Context) -> SpotflowGateway)? = null
+        public var gatewayFactory: ((Context) -> ManagedGateway)? = null
 
         /**
          * Optional custom foreground notification (branding). Falls back to a default. The provider must
@@ -146,19 +143,19 @@ public class SpotflowGatewayService : Service() {
 
         /** Called once the gateway is created; typically calls `gateway.startScanning()`. */
         @Volatile
-        public var onReady: ((SpotflowGateway) -> Unit)? = null
+        public var onReady: ((ManagedGateway) -> Unit)? = null
 
-        private val _gateway = MutableStateFlow<SpotflowGateway?>(null)
+        private val _gateway = MutableStateFlow<ManagedGateway?>(null)
 
         /**
          * The gateway the service is hosting, or null while it isn't running. Collect it to follow the
          * gateway across [restart]s (each one creates a new instance) and observe its
-         * [SpotflowGateway.devices] and [SpotflowGateway.status].
+         * [ManagedGateway.scanStatus]; read [ManagedGateway.diagnosticsSnapshot] for a report.
          */
-        public val gatewayFlow: StateFlow<SpotflowGateway?> get() = _gateway
+        public val gatewayFlow: StateFlow<ManagedGateway?> get() = _gateway
 
         /** The live gateway instance while the service runs; see [gatewayFlow] to observe it. */
-        public val gateway: SpotflowGateway? get() = _gateway.value
+        public val gateway: ManagedGateway? get() = _gateway.value
 
         public fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, SpotflowGatewayService::class.java))

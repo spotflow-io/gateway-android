@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     name: Test & build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # Third-party actions are pinned to a commit: a tag can be moved to different code, a commit can't.
       # Dependabot keeps the pins (and the version comments) current.
@@ -28,10 +28,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
-        with:
-          packages: 'platforms;android-35 platforms;android-36 build-tools;36.0.0'
+      - name: Ensure Android SDK packages are installed
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
@@ -80,3 +80,75 @@ jobs:
           name: spotflow-gateway-debug-${{ github.sha }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+  # Test and pack both npm packages. The Kotlin bridge itself builds only inside a React Native app.
+  react-native:
+    name: React Native packages
+    runs-on: ubuntu-24.04
+    env:
+      INTERNAL_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    defaults:
+      run:
+        working-directory: react-native
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Publishable tarballs must be built from the PR head, not GitHub's synthetic merge commit.
+          ref: ${{ env.INTERNAL_PR == 'true' && github.event.pull_request.head.sha || github.ref }}
+          persist-credentials: false
+
+      # The tests run the TypeScript sources directly, which needs Node 22.18 or newer.
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      # Same standalone pnpm as the platform frontend, with a pinned archive and checksum.
+      - name: Set up pnpm
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/pnpm.tar.gz" https://github.com/pnpm/pnpm/releases/download/v11.27.0/pnpm-linux-x64.tar.gz
+          echo "14ed04e631e4563abf3570dda1a365316683149a482b741a2db37e495f6b9cdb  $RUNNER_TEMP/pnpm.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/pnpm-bin"
+          tar -xzf "$RUNNER_TEMP/pnpm.tar.gz" -C "$RUNNER_TEMP/pnpm-bin"
+          echo "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+
+      - name: Type check and tests
+        run: pnpm typecheck && pnpm test
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Ensure Android SDK packages are installed
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+
+      # Only internal PRs produce publishable artifacts. All PRs still verify packaging.
+      - name: Version the packages as an alpha of this PR
+        if: env.INTERNAL_PR == 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: node scripts/prepare-alpha.mjs "$PR.$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT"
+
+      - name: Pack and verify both tarballs
+        run: bash scripts/pack-release.sh "$RUNNER_TEMP/npm"
+
+      - name: Upload the alpha tarballs
+        if: env.INTERNAL_PR == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-alpha
+          path: ${{ runner.temp }}/npm/*.tgz
+          if-no-files-found: error
+          retention-days: 30

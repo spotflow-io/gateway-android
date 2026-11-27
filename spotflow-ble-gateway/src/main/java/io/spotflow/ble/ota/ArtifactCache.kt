@@ -14,6 +14,7 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.security.MessageDigest
+import java.util.UUID
 import kotlin.concurrent.thread
 
 /**
@@ -27,13 +28,18 @@ import kotlin.concurrent.thread
  * - several devices updating to the same artifact share one download;
  * - a failed download is not remembered: the next OPEN tries again.
  *
- * At most [maxEntries] artifacts are kept; the least recently opened go first. [dir] is emptied before the
- * first download and when the cache is [cleared][clear]: artifacts are not kept across gateway runs. No disk
- * I/O happens on the caller's thread.
+ * At most [maxEntries] artifacts are kept; the least recently opened go first. Artifacts are not kept across
+ * gateway runs: each cache keeps its files in a directory of its own under the shared [root], which it
+ * deletes when it is [cleared][clear], and before its first download it deletes what earlier runs left in
+ * [root]. A gateway restarted in place therefore never loses its files to the one it replaces, which may
+ * still be cleaning up. No disk I/O happens on the caller's thread.
  */
 internal class ArtifactCache(
-    /** The directory, resolved on first use off the caller's thread (`Context.getCacheDir` does disk I/O). */
-    directory: () -> File,
+    /**
+     * The directory shared by every run, resolved on first use off the caller's thread
+     * (`Context.getCacheDir` does disk I/O).
+     */
+    rootDirectory: () -> File,
     private val downloader: ArtifactDownloader,
     /** Largest artifact accepted; a larger one is refused with [Status.TOO_LARGE]. */
     val maxArtifactBytes: Long,
@@ -54,7 +60,10 @@ internal class ArtifactCache(
 
     private class Entry(val download: Deferred<Artifact>, var lastUsed: Long)
 
-    private val dir by lazy(directory)
+    private val root by lazy(rootDirectory)
+
+    /** This cache's own directory under [root]. */
+    private val dir by lazy { File(root, "run-${UUID.randomUUID()}") }
 
     // A failed download fails its Deferred only, never the scope it runs in.
     private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
@@ -63,9 +72,9 @@ internal class ArtifactCache(
     private var clock = 0L
     private var nextFile = 0L
 
-    /** Deletes what an earlier run left in [dir]; every download waits for it, on first use. */
+    /** Deletes what earlier runs left in [root]; every download waits for it, on first use. */
     private val prepared = scope.async(start = CoroutineStart.LAZY) {
-        wipe()
+        root.listFiles()?.forEach { if (it != dir) it.deleteRecursively() }
         dir.mkdirs()
     }
 
@@ -99,7 +108,7 @@ internal class ArtifactCache(
             entries.values.forEach { it.download.cancel() }
             entries.clear()
         }
-        thread(name = "spotflow-ota-clear", isDaemon = true) { runCatching { wipe() } }
+        thread(name = "spotflow-ota-clear", isDaemon = true) { runCatching { dir.deleteRecursively() } }
     }
 
     /** Must hold [lock]. */
@@ -133,10 +142,6 @@ internal class ArtifactCache(
                 .map { (key, entry) -> entries.remove(key); entry }
         }
         evicted.forEach { entry -> entry.download.getCompletedOrNull()?.file?.delete() }
-    }
-
-    private fun wipe() {
-        dir.listFiles()?.forEach { it.delete() }
     }
 
     private companion object {

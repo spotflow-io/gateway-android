@@ -40,7 +40,6 @@
     <string name="collapsed">Collapsed</string>
     <string name="buffer_summary">Buffer   RAM %1$s / %2$s   ·   flash %3$s / %4$s</string>
     <string name="buffer_summary_ram_only">Buffer   RAM %1$s / %2$s   ·   flash off</string>
-    <string name="buffer_summary_offline">%1$s   ·   no network</string>
     <string name="status_starting">Starting…</string>
     <string name="status_bluetooth_off">Bluetooth is off. Scanning resumes when it is turned on.</string>
     <string name="status_scan_retrying">Scanning for devices failed (%1$s). Trying again…</string>

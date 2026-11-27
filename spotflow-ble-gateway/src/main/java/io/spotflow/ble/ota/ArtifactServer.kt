@@ -1,6 +1,6 @@
 package io.spotflow.ble.ota
 
-import io.spotflow.ble.OtaTransfer
+import io.spotflow.ble.diagnostics.FirmwareTransfer
 import io.spotflow.ble.Slog
 import io.spotflow.ble.protocol.ArtifactProtocol
 import io.spotflow.ble.protocol.ArtifactProtocol.Header
@@ -27,7 +27,7 @@ internal class ArtifactServer(
     private val deviceId: String,
     private val send: suspend (ByteArray) -> Unit,
     /** The transfer under way, for the device's status; null once it is closed. */
-    private val onProgress: (OtaTransfer?) -> Unit = {},
+    private val onProgress: (FirmwareTransfer?) -> Unit = {},
 ) {
     private val lock = Any()
 
@@ -82,7 +82,7 @@ internal class ArtifactServer(
                     synchronized(lock) { transfers.remove(header.transferId) }
                     return ArtifactProtocol.status(header, Status.TRANSIENT_FAILURE)
                 }
-                onProgress(OtaTransfer(artifact.size, request.offset + request.count))
+                onProgress(FirmwareTransfer(artifact.size, request.offset + request.count))
                 ArtifactProtocol.block(header, request.offset, data)
             }
             is Request.Close -> {
@@ -100,7 +100,7 @@ internal class ArtifactServer(
 
     private suspend fun open(request: Request.Open): ByteArray {
         val header = request.header
-        onProgress(OtaTransfer(sizeBytes = null, deliveredBytes = 0))
+        onProgress(FirmwareTransfer(sizeBytes = null, lastReadEndOffsetBytes = 0))
         val artifact = try {
             cache.open(request.url, request.secret)
         } catch (e: ArtifactDownloadException) {
@@ -113,7 +113,7 @@ internal class ArtifactServer(
         }
         synchronized(lock) { transfers[header.transferId] = artifact }
         Slog.i(TAG, "artifact transfer to $deviceId opened (${artifact.size} bytes)")
-        onProgress(OtaTransfer(artifact.size, 0))
+        onProgress(FirmwareTransfer(artifact.size, 0))
         return ArtifactProtocol.opened(header, artifact.size)
     }
 

@@ -1,21 +1,9 @@
 package io.spotflow.ble.cloud
 
 import io.spotflow.ble.Slog
-import kotlinx.coroutines.flow.MutableStateFlow
+import io.spotflow.ble.diagnostics.BufferUsage
 import kotlinx.coroutines.flow.StateFlow
 import java.io.Closeable
-
-/**
- * How much of the gateway-wide store-and-forward budget is in use, across all devices. Sizes count each
- * message's payload plus a fixed estimate of the overhead of holding it.
- */
-public data class BufferUsage(
-    val ramBytes: Long = 0,
-    val ramMaxBytes: Long = 0,
-    val flashBytes: Long = 0,
-    /** 0 when the buffer is RAM-only. */
-    val flashMaxBytes: Long = 0,
-)
 
 /**
  * The gateway-wide store-and-forward budget: every device's [StoreAndForwardBuffer] draws on one RAM
@@ -52,7 +40,7 @@ internal class BufferPool(
 
     internal val lock = Any()
     private val buffers = LinkedHashSet<StoreAndForwardBuffer>()
-    private var ramUsed = 0L
+    @Volatile private var ramUsed = 0L
     private var shutDown = false
     private var released = false
 
@@ -62,31 +50,17 @@ internal class BufferPool(
     /** Bytes held in flash across all devices. */
     val diskBytes: Long get() = store.bytes
 
-    private val _usage = MutableStateFlow(BufferUsage(0, ramMaxBytes, store.bytes, flashMaxBytes))
-
-    /** Live usage of the budget, updated on every change. */
-    val usage: StateFlow<BufferUsage> = _usage
-
-    /** False once the flash store turned out to be unusable (the pool then drops instead of spilling). */
-    val storeAvailable: StateFlow<Boolean> get() = store.available
+    /** Read in-memory counters without acquiring locks held during DB operations. */
+    fun usageSnapshot(): BufferUsage = BufferUsage(ramUsed, ramMaxBytes, store.bytes, flashMaxBytes, store.available.value)
 
     /** See [MessageStore.handoffs]. */
     val handoffs: StateFlow<Int> get() = store.handoffs
-
-    /** Must hold [lock]. Publishes the current [usage]. */
-    internal fun publishUsage() {
-        _usage.value = BufferUsage(ramUsed, ramMaxBytes, store.bytes, flashMaxBytes)
-    }
 
     /**
      * Devices with data in flash, e.g. left behind when the app was killed during an outage. Opens the
      * store if it isn't yet, so call it from a background thread.
      */
-    fun storedDeviceIds(): List<String> {
-        val ids = store.storedDeviceIds()
-        synchronized(lock) { publishUsage() } // the store's totals are known from here on
-        return ids
-    }
+    fun storedDeviceIds(): List<String> = store.storedDeviceIds()
 
     /** Opens a buffer for [deviceId]; it first delivers anything the device already has stored. */
     fun open(deviceId: String): StoreAndForwardBuffer = synchronized(lock) {
@@ -258,7 +232,7 @@ internal class StoreAndForwardBuffer internal constructor(
             ram.addLast(item)
             ramTierBytes += cost(item)
             pool.ramChanged(cost(item))
-            pool.enforceRamBudget().also { pool.publishUsage() }
+            pool.enforceRamBudget()
         }
         notify(changed)
         return item.seq
@@ -311,7 +285,6 @@ internal class StoreAndForwardBuffer internal constructor(
                 store.remove(deviceId, item.seq) // the item was spilled (possibly mid-publish) or evicted
             }
         }
-        pool.publishUsage()
     }
 
     /**
@@ -323,7 +296,6 @@ internal class StoreAndForwardBuffer internal constructor(
             commitPublished()
             if (ram.isEmpty() || !pool.spillToFlash) return
             val evicted = spillOldest(Long.MAX_VALUE) ?: return
-            pool.publishUsage()
             pool.flashEvicted(evicted).toSet() - this
         }
         notify(changed)
@@ -339,7 +311,6 @@ internal class StoreAndForwardBuffer internal constructor(
         ram.clear()
         ramTierBytes = 0
         pool.closed(this)
-        pool.publishUsage()
     }
 
     /**

@@ -8,11 +8,11 @@ import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.material.textfield.TextInputLayout
-import io.spotflow.ble.DeviceFilter
-import io.spotflow.ble.ScanState
-import io.spotflow.ble.SpotflowGateway
 import io.spotflow.ble.cloud.StaticIngestKey
-import io.spotflow.ble.service.SpotflowGatewayService
+import io.spotflow.ble.managed.DeviceFilter
+import io.spotflow.ble.managed.ManagedGateway
+import io.spotflow.ble.managed.ScanState
+import io.spotflow.ble.managed.SpotflowGatewayService
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -65,13 +65,13 @@ class DemoScreensTest {
         val bluetooth = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
         @Suppress("DEPRECATION") // the shadow's own switch for "Bluetooth is off"
         shadowOf(bluetooth).setEnabled(false)
-        SpotflowGatewayService.gatewayFactory = { ctx -> SpotflowGateway(ctx, StaticIngestKey("key"), DeviceFilter.AcceptAll) }
+        SpotflowGatewayService.gatewayFactory = { ctx -> ManagedGateway(ctx, StaticIngestKey("key"), DeviceFilter.AcceptAll) }
         SpotflowGatewayService.onReady = { it.startScanning() }
         val service = Robolectric.buildService(SpotflowGatewayService::class.java).create()
         try {
             val gateway = SpotflowGatewayService.gateway
             assertNotNull("the service hosts a gateway", gateway)
-            assertEquals(ScanState.WAITING_FOR_BLUETOOTH, gateway!!.status.value.scan)
+            assertEquals(ScanState.WAITING_FOR_BLUETOOTH, gateway!!.scanStatus.value.state)
 
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
@@ -145,6 +145,5 @@ class DemoScreensTest {
         assertEquals("⚠ bad key", context.getString(R.string.problem, "bad key"))
         assertEquals("⚠ bad key\nfix it", context.getString(R.string.problem_with_hint, "bad key", "fix it"))
         assertTrue(context.getString(R.string.status_scan_retrying, "error 2").contains("error 2"))
-        assertTrue(context.getString(R.string.buffer_summary_offline, "Buffer").startsWith("Buffer"))
     }
 }

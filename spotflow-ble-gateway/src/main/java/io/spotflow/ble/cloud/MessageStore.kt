@@ -67,7 +67,16 @@ internal class MessageStore(
             db.execSQL(CREATE_QUEUE)
         }
 
-        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            if (oldVersion == 1) {
+                // The old IDs were arbitrary strings. Move all of them into the supplied-key namespace
+                // without risking a primary-key collision in an in-place update.
+                db.execSQL("ALTER TABLE q RENAME TO q_v1")
+                db.execSQL(CREATE_QUEUE)
+                db.execSQL("INSERT INTO q SELECT '$SUPPLIED_PREFIX' || device, seq, topic, payload, len FROM q_v1")
+                db.execSQL("DROP TABLE q_v1")
+            }
+        }
     }
 
     private var db: SQLiteDatabase? = null
@@ -90,7 +99,7 @@ internal class MessageStore(
 
     private val bytesByDevice = HashMap<String, Long>()
     private val rowsByDevice = HashMap<String, Long>()
-    private var totalBytes = 0L
+    @Volatile private var totalBytes = 0L
     private var totalRows = 0L
 
     /** What storing a payload of [payloadSize] bytes counts as against [maxBytes]. */
@@ -100,7 +109,6 @@ internal class MessageStore(
      * Bytes stored for all devices — as far as known: this never opens the database, so it reads 0 until
      * something else has (it backs a status display that may be read on the main thread).
      */
-    @get:Synchronized
     val bytes: Long get() = totalBytes
 
     /** Opens the database if it isn't yet. Does disk I/O: call from a background thread. */
@@ -384,7 +392,7 @@ internal class MessageStore(
             db.transaction {
                 legacy.rawQuery("SELECT seq, topic, payload FROM q ORDER BY seq ASC", null).use { c ->
                     while (c.moveToNext()) {
-                        if (insert(db, deviceId, Entry(c.getLong(0), c.getString(1), c.getBlob(2)))) moved++
+                        if (insert(db, suppliedKeyQueue(deviceId), Entry(c.getLong(0), c.getString(1), c.getBlob(2)))) moved++
                     }
                 }
             }
@@ -410,7 +418,9 @@ internal class MessageStore(
         private const val TAG = "SpotflowBuffer"
         private const val DB_NAME = "spotflow_buffer.db"
         private const val LEGACY_PREFIX = "spotflow_buffer_"
-        private const val SCHEMA_VERSION = 1
+        private const val SCHEMA_VERSION = 2
+        private const val SUPPLIED_PREFIX = "gateway:"
+        private const val DEVICE_PREFIX = "device:"
         private const val CREATE_QUEUE =
             "CREATE TABLE q (device TEXT NOT NULL, seq INTEGER NOT NULL, topic TEXT NOT NULL, " +
                 "payload BLOB NOT NULL, len INTEGER NOT NULL, PRIMARY KEY (device, seq))"
@@ -421,6 +431,13 @@ internal class MessageStore(
          * vary — that keeps the limit honest when payloads are only a few dozen bytes.
          */
         const val ROW_OVERHEAD_BYTES = 96L
+
+        fun suppliedKeyQueue(deviceId: String): String = SUPPLIED_PREFIX + deviceId
+
+        fun suppliedKeyDeviceId(queueId: String): String? =
+            queueId.takeIf { it.startsWith(SUPPLIED_PREFIX) }?.removePrefix(SUPPLIED_PREFIX)
+
+        fun deviceKeyQueue(fingerprint: String): String = DEVICE_PREFIX + fingerprint
 
         private var shared: MessageStore? = null
         private var users = 0

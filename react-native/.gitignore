@@ -1,0 +1,7 @@
+node_modules/
+packages/*/lib/
+packages/*/LICENSE.md
+packages/ble-gateway/android/maven/
+packages/ble-gateway/android/build/
+packages/ble-gateway/android/.cxx/
+*.tgz

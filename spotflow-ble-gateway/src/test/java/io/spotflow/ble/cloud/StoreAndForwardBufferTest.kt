@@ -176,15 +176,15 @@ class StoreAndForwardBufferTest {
 
         assertEquals("across both tiers", 3L, buffer.count)
         assertEquals(1L, other.count)
-        val usage = pool.usage.value
+        val usage = pool.usageSnapshot()
         assertEquals(130L, usage.ramBytes + usage.flashBytes)
         assertEquals(100L, usage.ramMaxBytes)
         assertEquals(1_000L, usage.flashMaxBytes)
 
         buffer.drainMarkers()
         assertEquals(0L, buffer.count)
-        assertEquals(10L, pool.usage.value.ramBytes)
-        assertEquals(0L, pool.usage.value.flashBytes)
+        assertEquals(10L, pool.usageSnapshot().ramBytes)
+        assertEquals(0L, pool.usageSnapshot().flashBytes)
     }
 
     @Test
@@ -369,12 +369,12 @@ class StoreAndForwardBufferTest {
         open(ramMaxBytes = 10_000, itemOverhead = 10, rowOverhead = 20)
         buffer.enqueue("t", payload(1, size = 5))
         assertEquals(15L, buffer.ramBytes)
-        assertEquals(15L, pool.usage.value.ramBytes)
+        assertEquals(15L, pool.usageSnapshot().ramBytes)
 
         buffer.flushToDisk()
         assertEquals(0L, buffer.ramBytes)
         assertEquals(25L, buffer.diskBytes)
-        assertEquals(25L, pool.usage.value.flashBytes)
+        assertEquals(25L, pool.usageSnapshot().flashBytes)
     }
 
     @Test
@@ -385,7 +385,7 @@ class StoreAndForwardBufferTest {
 
         repeat(4) { buffer.enqueue("t", payload(it + 1)) } // 160 bytes > 100
 
-        assertEquals(false, pool.storeAvailable.value)
+        assertEquals(false, pool.usageSnapshot().flashAvailable)
         assertTrue("RAM stays bounded", pool.ramBytes <= 100)
         assertEquals("the newest survive", listOf(3, 4), buffer.drainMarkers())
     }

@@ -1,4 +1,4 @@
-package io.spotflow.ble.transport
+package io.spotflow.ble.managed
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter

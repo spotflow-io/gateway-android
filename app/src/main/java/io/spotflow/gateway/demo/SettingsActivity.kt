@@ -11,7 +11,7 @@ import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputLayout
-import io.spotflow.ble.service.SpotflowGatewayService
+import io.spotflow.ble.managed.SpotflowGatewayService
 import io.spotflow.gateway.demo.databinding.ActivitySettingsBinding
 import java.util.Locale
 
