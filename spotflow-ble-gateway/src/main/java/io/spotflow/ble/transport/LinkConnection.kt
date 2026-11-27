@@ -39,10 +39,11 @@ import java.util.concurrent.ConcurrentHashMap
  * and is not reused.
  *
  * ## Calls
- * At most one link call is outstanding at a time ([awaitDisconnect][BleLink.awaitDisconnect] aside). Each
+ * At most one link call is waited for at a time ([awaitDisconnect][BleLink.awaitDisconnect] aside). Each
  * is timed from when it is issued — so the time it spends behind the host's own operations counts — and
  * a call that times out ends the relay ([ConnectionState.FAILED]). Calls run in [scope], which outlives
- * the session, so a call abandoned on timeout still runs before the next one.
+ * the session, so a call abandoned on timeout keeps running; the link's queue runs it before the next
+ * one, which may already have been issued (see the call order in [BleLink]).
  *
  * When the link drops, the pending call is no longer waited for and the state becomes
  * [ConnectionState.IDLE].
@@ -310,20 +311,28 @@ internal class LinkConnection(
         private const val ACK_RETRY_INITIAL_MS = 1_000L
         private const val ACK_RETRY_MAX_MS = 30_000L
 
+        /** ATT `Insufficient Encryption Key Size`: the link's encryption is too weak (not in the public SDK). */
+        private const val GATT_INSUFFICIENT_KEY_SIZE = 0x0C
+
         /** `GATT_AUTH_FAIL`: pairing failed or was declined (not in the public SDK). */
         private const val GATT_AUTH_FAIL = 0x89
 
         /**
-         * A failed operation's GATT status, explained where the user has to act. A device can require an
-         * encrypted link for everything but its Capabilities (the Device SDK does by default when it is
-         * built with OTA), and then answers an unpaired gateway with one of these.
+         * Whether a failed operation's GATT status means the phone has to pair (bond) with the device. A
+         * device can require an encrypted link for everything but its Capabilities (the Device SDK does by
+         * default when it is built with OTA), and then answers an unpaired gateway with one of these.
          */
-        fun describeGattStatus(status: Int): String = when (status) {
+        fun needsPairing(status: Int): Boolean = when (status) {
             BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION,
             BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION,
+            GATT_INSUFFICIENT_KEY_SIZE,
             GATT_AUTH_FAIL,
-            -> "$status, the device requires an encrypted link: pair (bond) it with this phone"
-            else -> status.toString()
+            -> true
+            else -> false
         }
+
+        /** A failed operation's GATT status, explained where the user has to act. */
+        fun describeGattStatus(status: Int): String =
+            if (needsPairing(status)) "$status, the device requires an encrypted link: pair (bond) it with this phone" else status.toString()
     }
 }

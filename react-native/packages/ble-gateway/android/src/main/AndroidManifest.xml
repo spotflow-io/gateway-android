@@ -1,19 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- The host app owns BLE and declares what it needs. The gateway's own declarations are for its managed
-         mode and would change the host's: limit location to API 30, mark scans as never used for location,
-         and add a foreground service the bridge never starts. Only INTERNET and ACCESS_NETWORK_STATE stay. -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" tools:node="remove" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" tools:node="remove" />
-    <uses-permission android:name="android.permission.BLUETOOTH" tools:node="remove" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" tools:node="remove" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" tools:node="remove" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" tools:node="remove" />
-
+    <!-- The host app owns BLE and declares the permissions its BLE library needs; the gateway AAR declares
+         only INTERNET and ACCESS_NETWORK_STATE. Its one other declaration, the service of its managed mode,
+         is never started by the bridge. Only that service is removed here: its name is the gateway's own,
+         so no declaration of another library is affected. -->
     <application>
         <service android:name="io.spotflow.ble.managed.SpotflowGatewayService" tools:node="remove" />
     </application>

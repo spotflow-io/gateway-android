@@ -18,6 +18,9 @@ internal class DeviceDiagnostics(attachment: Attachment) {
     var otaEnabled = false
     var activeFirmwareTransfer: FirmwareTransfer? = null
 
+    /** When this device's latest attachment ended, relative to the others' (larger is later). Gateway-owned. */
+    var endedOrder = 0L
+
     inline fun update(block: DeviceDiagnostics.() -> Unit) = synchronized(this) { block() }
 
     fun snapshot(): DeviceReport = synchronized(this) {

@@ -247,7 +247,7 @@ class ArtifactServerTest {
         val server = server(cache(maxEntries = 1))
         server.handle(this, open(transfer = 5, request = 1, url = "a")); runCurrent()
         server.handle(this, open(transfer = 6, request = 1, url = "b")); runCurrent()
-        assertEquals(1, dir.listFiles()!!.size)
+        assertEquals(1, artifactFiles().size)
 
         server.handle(this, read(transfer = 5, request = 2, offset = 0, count = 10)); runCurrent()
         assertEquals(Status.TRANSIENT_FAILURE.code, lastResponse().status)
@@ -265,6 +265,31 @@ class ArtifactServerTest {
 
         server.handle(this, open(transfer = 5, request = 1)); runCurrent()
         assertFalse(File(dir, "stale").exists())
-        assertEquals(firmware.size.toLong(), File(dir, "artifact-0").length())
+        assertFalse(File(dir, "artifact-0").exists())
+        assertEquals(listOf(firmware.size.toLong()), artifactFiles().map { it.length() })
     }
+
+    @Test
+    fun `a gateway that replaces another keeps its artifacts while the old one clears its own`() = runTest {
+        setUp()
+        val old = cache()
+        server(old).handle(this, open(transfer = 5, request = 1, url = "a")); runCurrent()
+        val oldFiles = artifactFiles()
+
+        // A restart: the new gateway starts while the old one is still shutting down.
+        val new = cache()
+        val newServer = server(new)
+        newServer.handle(this, open(transfer = 6, request = 1, url = "b")); runCurrent()
+        val newFiles = artifactFiles() - oldFiles.toSet()
+        old.clear()
+        Thread.sleep(200) // clear() deletes on a thread of its own
+
+        assertEquals(1, newFiles.size)
+        assertTrue("the new gateway's artifact survives the old one's clear()", newFiles.single().exists())
+        newServer.handle(this, read(transfer = 6, request = 2, offset = 0, count = 10)); runCurrent()
+        assertEquals(0, lastResponse().status)
+    }
+
+    /** The artifact files of every run, wherever they are kept under [dir]. */
+    private fun artifactFiles(): List<File> = dir.walk().filter { it.isFile }.toList()
 }

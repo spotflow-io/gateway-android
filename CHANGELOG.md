@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`GattBridge(delegate)`**: register `bridge.callback` with `connectGatt` and pass the app's own
+  `BluetoothGattCallback` as the delegate; it receives every event (connection, service discovery, MTU,
+  the results of its own operations) once the bridge has seen it. Before, an app that registered the
+  bridge's callback directly never learned when to attach.
+- **`DeviceError.gattStatus`** — the Bluetooth stack's status for a failed operation — and
+  **`DeviceError.Kind.PAIRING_REQUIRED`** for a device that needs an encrypted link the phone doesn't
+  have. Such failures were `BLUETOOTH`, so an app that wanted to ask the user to pair had to parse the
+  message. Both reach React Native too.
+
+### Changed
+
+- **The library's manifest declares only `INTERNET` and `ACCESS_NETWORK_STATE`** (and the managed
+  service). Apps running a `ManagedGateway` declare the BLE and location permissions, and apps using
+  `SpotflowGatewayService` the foreground-service and notification ones, in their own manifest; see
+  "Permissions and manifest" in the README. Merged in from the library, they capped the app's location
+  permission at API 30 and marked its scans `neverForLocation`, and the React Native bridge had to remove
+  them with `tools:node="remove"` — which also strips them from other libraries' manifests, e.g.
+  `react-native-ble-manager`'s. The bridge now removes only the gateway's own service.
+- **Reported types are plain classes**, not data classes: `GatewayReport`, `DeviceReport`,
+  `BufferUsage`, `FirmwareTransfer`, `DeviceError`, `AttachmentEnd`, `AttachmentState.Ready`/`Ended`
+  and `ScanStatus` compare by value as before, but can't be destructured (`val (a, b) = report`), so
+  fields can be added later without breaking apps. Read the properties by name.
+- **`DeviceReport.cloudError` reports `AUTH_REJECTED`** while uploads of a device's backlog are paused
+  on a rejected key. It used to stay empty, so a background upload that kept failing was invisible.
+- **A diagnostics report keeps at most 64 devices that are no longer attached** (those whose attachments
+  ended last), so a host attaching ever new peripherals doesn't grow it without bound. `detach()` drops
+  the device's row, as before.
+- `GattProfile`'s UUIDs are static fields for Java (`GattProfile.SERVICE`, was `getSERVICE()`).
+- `ManagedGateway.startScanning()` is no longer annotated `@RequiresPermission(BLUETOOTH_SCAN,
+  BLUETOOTH_CONNECT)`. Those permissions exist only from Android 12, so for an app supporting older
+  versions lint demanded a check that always fails there (Android 11 and older need location instead).
+  Its documentation lists what each version needs. It never threw for a missing permission: discovery
+  reports it as `ScanState.RETRYING` and starts once the permission is granted.
+- The library is documented as Kotlin-first: its extension points are suspending functions.
+- React Native: **`isSupported()` is removed.** It returned false both off Android and on Android when
+  the native module was missing from the build, so a forgotten rebuild silently turned the gateway off.
+  Check `Platform.OS === 'android'` (and, in an app that builds with and without the module, its own
+  build flag) before using the gateway. `createGateway()` and `readDeviceId()` now reject — never throw —
+  with `code` `E_UNSUPPORTED_PLATFORM` off Android, or `E_NOT_LINKED` when the module is missing.
+- React Native: a gateway handle acts on the gateway it was created for only. After that one is shut
+  down or replaced by `createGateway()` with other options (also from another React context), its
+  `attach()` and `diagnosticsSnapshot()` reject and its `shutdown()` does nothing; it used to act on
+  whatever gateway was current.
+- The `BleLink` contract says what the gateway does: it waits for one call at a time, but may issue the
+  next while one it stopped waiting for still runs, so adapters queue calls per connection.
+
+### Fixed
+
+- **Desired configuration could be acknowledged to the broker without reaching the device.** After three
+  failed writes — timeouts, or the link dropping mid-write — it was dropped and acknowledged. Failed
+  writes are now retried, and after three in a row the configuration waits, unacknowledged, for the
+  device's next session.
+- Desired configuration and OTA commands the broker resends after an MQTT reconnect are matched to the
+  queued messages in order, so each is written once. Before, only a resend of the last queued message
+  was recognized: with two queued, both were written twice, the older one last for a moment.
+- A gateway restarted in place (`SpotflowGatewayService.restart`, React Native reconfiguring) could lose
+  its OTA artifact files to the gateway it replaced, which deletes its own while shutting down; each
+  gateway now keeps them in a directory of its own.
+- `GattBridge` reports an operation Android refuses to issue (or a missing characteristic) as a
+  `BleLinkException`, as `BleLink` requires, rather than an `IllegalStateException`.
+
 ## 0.4.0
 
 The library is split in two layers. `SpotflowGateway` is now the core: it relays devices over connections

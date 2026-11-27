@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
  * A transport to one Spotflow device that exposes the framed message streams, over a connection the
  * host app owns: a [LinkConnection] over a `BleLink`.
  *
- * Only one call to the device is ever outstanding at a time.
+ * Only one call to the device is ever waited for at a time.
  */
 internal interface BleConnection {
 

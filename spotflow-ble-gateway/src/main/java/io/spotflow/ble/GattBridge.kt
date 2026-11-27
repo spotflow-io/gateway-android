@@ -10,16 +10,17 @@ import io.spotflow.ble.transport.GattClient
  * device and don't want a second one. One bridge serves one `BluetoothGatt`:
  *
  * ```
- * val bridge = GattBridge()
+ * val bridge = GattBridge(myCallback)   // myCallback: the app's own BluetoothGattCallback
  * val gatt = device.connectGatt(context, false, bridge.callback, BluetoothDevice.TRANSPORT_LE)
- * // once connected, with services discovered and the MTU negotiated:
+ * // in myCallback, once connected, with services discovered and the MTU negotiated:
  * val attachment = gateway.attach(bridge.link(gatt))
  * ```
  *
- * 1. **Wire [callback]** into the GATT's callbacks from the start. Either pass it straight to
- *    `connectGatt`, or — if the app has its own callback — forward connection state changes, MTU
- *    changes, characteristic reads/writes/notifications, and descriptor writes. Forward both the
- *    API 33+ and older overloads of `onCharacteristicRead` and `onCharacteristicChanged`.
+ * 1. **Wire [callback]** into the GATT's callbacks from the start. Either register it with `connectGatt`
+ *    and pass the app's own callback as the bridge's `delegate`, which then receives every event, or
+ *    register the app's callback and forward connection state changes, MTU changes, characteristic
+ *    reads/writes/notifications, and descriptor writes to [callback]. Forward both the API 33+ and older
+ *    overloads of `onCharacteristicRead` and `onCharacteristicChanged`.
  * 2. **Attach [link]** once the link is ready, as for any [BleLink]: connected, services discovered and
  *    any MTU exchange finished. After a reconnect (with `BluetoothGatt.connect()`, so the GATT and the bridge stay the
  *    same), attach a fresh [link].
@@ -28,10 +29,14 @@ import io.spotflow.ble.transport.GattClient
  * outstanding GATT operation at a time, and this is what keeps the app's and the gateway's apart. Time a
  * gateway operation spends waiting for a [runExclusive] block counts towards its 10 s budget, so keep
  * blocks short.
+ *
+ * @param delegate the app's own callback, when [callback] is the one registered with the GATT: it gets
+ *   every event once the bridge has seen it, as Android would have delivered it — the gateway's too
+ *   (notifications and operation results on the Spotflow service's characteristics), which it can ignore.
  */
-public class GattBridge {
+public class GattBridge @JvmOverloads constructor(delegate: BluetoothGattCallback? = null) {
 
-    private val client = GattClient()
+    private val client = GattClient(delegate)
 
     /** Receives the GATT's events. Valid for the life of the bridge, across reconnects. */
     public val callback: BluetoothGattCallback get() = client.callback

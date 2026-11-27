@@ -117,7 +117,7 @@ devices never come back.
   for telemetry and configuration only.
 - **Encryption** — a device can require an encrypted (paired) link for everything but Capabilities; the
   Device SDK does by default when built with OTA. Pair (bond) such a device with the phone, or the
-  session fails with a `BLUETOOTH` error saying so.
+  session fails with a `PAIRING_REQUIRED` error (its `gattStatus` says what the device answered).
 - **Message types** — `TELEMETRY` (`0x02`), `REPORTED_CONFIGURATION` (`0x03`),
   `DESIRED_CONFIGURATION` (`0x04`). Telemetry payloads carry logs, metrics **and core-dump chunks**; the
   gateway relays them opaquely (CBOR is not parsed). OTA uses `OTA_D2C` (`0x05`, results), `OTA_C2D`
@@ -138,7 +138,9 @@ devices never come back.
   subscribed one (`config-cbor-c2d/<workspace>/<device>`), so, like the Device SDK, the gateway matches
   the topic by prefix. It is written only after the device has sent its reported configuration in the
   current session: the Device SDK discards desired configuration that arrives earlier. Until then it
-  stays queued and unacknowledged, so nothing is lost while the device is away.
+  stays queued and unacknowledged, so nothing is lost while the device is away. A failed write is
+  retried; after three failures in a row the configuration waits, still unacknowledged, for the next
+  session. What the broker resends after a reconnect is matched to what is queued, so it is written once.
 - **Desired configuration after a device reboot** — the broker sends desired configuration only when an
   MQTT connection is established (a device on MQTT directly gets it again on every reboot). Because the
   gateway keeps a device's MQTT connection across BLE reconnects, it remembers the last configuration
@@ -327,15 +329,18 @@ if (GattProfile.readDeviceId(myLink) in myProvisionedDevices) {
 - **One link is one connected, service-discovered connection.** When it drops, the attachment ends
   (`DISCONNECTED`); attach a fresh link after reconnecting. Every attachment ends exactly once, and
   `awaitEnd()` says why: `DETACHED`, `REPLACED` (the same address was attached again),
-  `DISCONNECTED` or `FAILED` (with the `DeviceError`, e.g.
-  `DUPLICATE_DEVICE` for another peripheral reporting a device ID already relayed).
+  `DISCONNECTED` or `FAILED` (with the `DeviceError`, e.g. `PAIRING_REQUIRED` for a device that needs
+  an encrypted link, or `DUPLICATE_DEVICE` for another peripheral reporting a device ID already
+  relayed; `gattStatus` holds the Bluetooth stack's status where there was one).
 - **Cleanup is best effort.** Before `awaitEnd()` returns, the gateway waits up to 2 s for TX notifications
   to be disabled. A pending operation may still finish later; the gateway does not disconnect the link.
   Only the attachment handle stops a host-owned session. To stop the entire gateway, call `shutdown()`:
   it returns immediately, releases resources and hands off buffered data to flash in the background,
   and does not accept any new attachments.
-- **The adapter's contract** is on `BleLink`. In short: run calls in the order the gateway issues them and
-  settle every one, also those the gateway stopped waiting for; `writeWithoutResponse` returns once the
+- **The adapter's contract** is on `BleLink`. In short: queue calls per connection, together with the
+  host's own operations, and run them one at a time in the order they were issued — the gateway waits for
+  one call at a time, but may issue the next while one it stopped waiting for still runs; settle every
+  call, also those the gateway stopped waiting for; `writeWithoutResponse` returns once the
   last value is on its way, not merely queued; `enableNotifications` and `disableNotifications` return
   once the CCCD write has completed; `maxWritePayloadBytes` is the ATT MTU minus 3 (20 if unknown); report
   failures as `BleLinkException` with the GATT status where there is one.
@@ -352,16 +357,19 @@ For apps that hold a `BluetoothGatt` themselves, `GattBridge` supplies the `BleL
 `gateway.attach` call. Use one bridge per `BluetoothGatt`:
 
 ```kotlin
-val bridge = GattBridge()
+val bridge = GattBridge(myCallback)   // your own BluetoothGattCallback receives every event
 val gatt = device.connectGatt(context, false, bridge.callback, BluetoothDevice.TRANSPORT_LE)
 
-// In your setup flow, after connection, service discovery and any MTU exchange have finished:
+// In your setup flow (myCallback), after connection, service discovery and any MTU exchange have finished:
 val attachment = gateway.attach(bridge.link(gatt))
 ```
 
 **Host contract:**
-1. If you use your own callback, forward connection and MTU changes, characteristic reads/writes/
-   notifications, and descriptor writes to `bridge.callback`. Forward both the API 33+ and older
+1. Either register `bridge.callback` and pass your own callback as the bridge's delegate, as above: it
+   gets every event once the bridge has seen it, as Android would have delivered it — the gateway's own
+   too (notifications and results on the Spotflow characteristics), which it can ignore. Or register
+   your own callback and forward connection and MTU changes, characteristic reads/writes/
+   notifications, and descriptor writes to `bridge.callback`; forward both the API 33+ and older
    overloads of `onCharacteristicRead` and `onCharacteristicChanged`.
 2. Run your own GATT operations inside `bridge.runExclusive { gatt -> ... }` while attached — the
    Android BLE stack allows only one outstanding GATT operation at a time, and this serializes yours with
@@ -419,7 +427,8 @@ that don't reconnect.
 `SpotflowGatewayService.gatewayFlow` is a `StateFlow` of the gateway the service hosts (null while it
 isn't running); collect it to follow the gateway across restarts.
 
-It runs as foreground service type `connectedDevice` with a persistent (customizable) notification. For a
+It runs as foreground service type `connectedDevice` with a persistent (customizable) notification; the
+app declares the permissions for it (see [Permissions and manifest](#permissions-and-manifest)). For a
 dedicated always-on gateway, also guide users to disable battery optimization (Doze) for the app.
 
 The service is `START_STICKY`, so Android recreates it after killing the process — but in a fresh process
@@ -446,7 +455,10 @@ managed.scanStatus                   // StateFlow<ScanStatus>: what discovery is
   reattach; managed mode retries.
 - Diagnostics are built from in-memory counters on request; no BLE, network, or disk I/O is performed.
   The demo takes a snapshot immediately and about once per second while visible. A device row shows the
-  latest attachment's state and any retryable `cloudError`; uploads may continue after the attachment ends.
+  latest attachment's state and, while its cloud connection isn't working, why (`cloudError`:
+  `CLOUD_UNREACHABLE` or `AUTH_REJECTED`, both retried); uploads may continue after the attachment ends.
+  `detach()` drops the row. A device that disconnected or failed keeps its row until it is attached
+  again; of those, the report keeps the 64 that ended last.
 - `ScanStatus.state` says whether discovery is running — `SCANNING`, `WAITING_FOR_BLUETOOTH`, `RETRYING`
   (with `error`, e.g. a missing permission) or `STOPPED`.
 - `bufferUsage.flashAvailable` is false if the persistent buffer could not be opened; `flashMaxBytes = 0`
@@ -524,7 +536,8 @@ flowchart TD
   CONNACK reason (e.g. `BAD_USER_NAME_OR_PASSWORD`), and ends the session. Instead of hammering the broker,
   the managed gateway asks the `CredentialsProvider` again after a pause that grows from one to fifteen
   minutes — so a rotated or corrected key is picked up — or at once on `managed.retry()`. Background
-  uploads also retry rejected credentials automatically, even if the device never reconnects.
+  uploads also retry rejected credentials automatically, even if the device never reconnects; the
+  device's `cloudError` says `AUTH_REJECTED` meanwhile.
 - **Poison messages** — a message the broker keeps refusing is dropped after 5 refusals; one the broker
   answers by hanging up, or never acknowledges, after 10 — so it can't block the rest of the buffer. This
   is judged only while that message is the only one in flight, so a bad message never takes its
@@ -551,8 +564,14 @@ val gateway = SpotflowGateway(
 ```
 
 Every option is optional; `GatewayOptions.DEFAULT` holds the defaults shown above (with the production
-endpoint), and `options.copy { … }` derives a variant. From Java, use `new GatewayOptions.Builder()` and its
-setters, then `build()`. `ManagedGateway` takes the same options after its `DeviceFilter`.
+endpoint), and `options.copy { … }` derives a variant. `ManagedGateway` takes the same options after
+its `DeviceFilter`.
+
+The library is **Kotlin-first**: what a host implements — `BleLink`, `CredentialsProvider`,
+`DeviceFilter` — and `Attachment.awaitEnd()`, `GattBridge.runExclusive` and `GattProfile.readDeviceId`
+are suspending functions, so an app written in Java needs a Kotlin layer of its own to use them. The rest
+can be called from Java directly: `new GatewayOptions.Builder()`, the constructors, `StaticIngestKey`,
+`DeviceFilter.AcceptAll` and the `GattProfile` UUIDs.
 
 The connection to the broker is always TLS and publishes with QoS 1, to the platform's topics.
 `CredentialsProvider` is a functional interface, called on every connection attempt, so hosts can resolve
@@ -560,23 +579,41 @@ the ingest key per device or refresh it on demand.
 
 ## Permissions and manifest
 
-The library declares the BLE, foreground-service and network permissions it needs; hosts merge them
-automatically. Runtime notes:
+The library declares only what it needs in every mode: `INTERNET` and `ACCESS_NETWORK_STATE`, plus the
+(unexported) `SpotflowGatewayService`. What else an app needs depends on how it uses the library, so the
+app declares it in its own manifest, where nothing of the library's can change it:
+
+- **Attaching its own connections** (`attach`, `GattBridge`): nothing more than its BLE stack already
+  needs.
+- **Managed gateway** (`ManagedGateway` scans and connects):
+
+  ```xml
+  <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+      android:usesPermissionFlags="neverForLocation" tools:targetApi="s" />
+  <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+  <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+  <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+  ```
+
+  Drop `neverForLocation` if the app derives location from BLE scans, and the `maxSdkVersion` if it uses
+  location on newer versions too.
+- **Running it in `SpotflowGatewayService`**, additionally:
+
+  ```xml
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  ```
+
+  Without them Android refuses to bring the service to the foreground, and it stops itself.
+
+Runtime notes:
 
 - **Android 12+ (API 31+):** the app requests `BLUETOOTH_SCAN` + `BLUETOOTH_CONNECT` at runtime;
   `POST_NOTIFICATIONS` on Android 13+.
 - **Android 11 and older (API ≤ 30):** BLE scanning requires the **Location** permission **and** the
   system Location toggle to be **on** — otherwise scanning silently finds nothing.
-
-Three of the library's declarations merge into the host app's own and are worth knowing about:
-
-- **Location is declared only up to API 30** (`android:maxSdkVersion="30"`). If your app uses location on
-  newer versions too, the merged manifest would cap *your* permission; keep it with
-  `<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:remove="android:maxSdkVersion" />`
-  (and the same for `ACCESS_COARSE_LOCATION`).
-- **`BLUETOOTH_SCAN` is declared `neverForLocation`.** If your app derives location from BLE scans
-  (beacons), remove the flag:
-  `<uses-permission android:name="android.permission.BLUETOOTH_SCAN" tools:remove="android:usesPermissionFlags" />`.
 - **Bluetooth LE is declared as used, not required**, so the library does not narrow the devices your app
   is offered to on Google Play. If the app is useless without BLE, declare
   `<uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />` yourself.
@@ -605,7 +642,7 @@ updates; a few are held back on purpose, each with its reason in `.github/depend
 the demo's version code is derived from it), commit, and tag that commit `v<version>`. The tag runs
 `.github/workflows/release.yml`, which refuses to continue if the tag and `spotflowVersion` disagree, then
 tests and publishes the signed APK, the AAR, its Maven repository and both npm tarballs as a GitHub Release,
-and publishes the npm packages. Pull requests can publish npm alphas; see
+and stages the npm packages for maintainer approval. Pull requests can also get staged npm alphas; see
 [Publishing](react-native/README.md#publishing).
 
 ### Signing

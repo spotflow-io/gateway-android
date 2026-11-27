@@ -642,6 +642,67 @@ class GatewaySessionTest {
     }
 
     @Test
+    fun `desired configuration whose writes keep failing waits, unacknowledged, for the next session`() = runTest {
+        val uplink = FakeUplink()
+        val links = registry(backgroundScope, uplink)
+        val first = FakeBleConnection().apply { failDesiredWrites = 10 }
+        val job1 = launch { runCatching { session(first, uplink, links).run() } }
+        runCurrent()
+
+        var acks = 0
+        uplink.deliverDesired(byteArrayOf(9)) { acks++ }
+        advanceTimeBy(60_000); runCurrent()
+        assertTrue("never written", first.sentDesiredConfig.isEmpty())
+        assertEquals("a failed write says nothing about the configuration: never acknowledged", 0, acks)
+        first.drop(); runCurrent()
+
+        val second = FakeBleConnection()
+        val job2 = launch { runCatching { session(second, uplink, links).run() } }
+        runCurrent()
+        assertEquals(listOf(9), second.sentDesiredConfig.map { it[0].toInt() })
+        assertEquals(1, acks)
+        second.drop(); runCurrent(); job1.cancel(); job2.cancel()
+    }
+
+    @Test
+    fun `desired configuration redelivered after a reconnect is written once, in order`() = runTest {
+        val ble = FakeBleConnection().apply { reportsConfiguration = false }
+        val uplink = FakeUplink()
+        val job = launch { runCatching { session(ble, uplink).run() } }
+        runCurrent()
+
+        val acks = mutableListOf<Int>()
+        uplink.deliverDesired(byteArrayOf(1)) { acks += 1 }
+        uplink.deliverDesired(byteArrayOf(2)) { acks += 2 }
+        uplink.loseConnection(); runCurrent()
+        assertEquals("reconnected", 2, uplink.connectCount)
+        // The broker resends everything unacknowledged, oldest first.
+        uplink.deliverDesired(byteArrayOf(1)) { acks += 1 }
+        uplink.deliverDesired(byteArrayOf(2)) { acks += 2 }
+
+        ble.reportConfiguration(); runCurrent()
+        assertEquals(listOf(1, 2), ble.sentDesiredConfig.map { it[0].toInt() })
+        assertEquals("each delivery acknowledged", listOf(1, 1, 2, 2), acks)
+        ble.drop(); runCurrent(); job.cancel()
+    }
+
+    @Test
+    fun `a setting changed and changed back is written each time`() = runTest {
+        val ble = FakeBleConnection().apply { reportsConfiguration = false }
+        val uplink = FakeUplink()
+        val job = launch { runCatching { session(ble, uplink).run() } }
+        runCurrent()
+
+        uplink.deliverDesired(byteArrayOf(1)) {}
+        uplink.deliverDesired(byteArrayOf(2)) {}
+        uplink.deliverDesired(byteArrayOf(1)) {} // new, not a redelivery: no reconnect in between
+
+        ble.reportConfiguration(); runCurrent()
+        assertEquals("the device ends with the latest", listOf(1, 2, 1), ble.sentDesiredConfig.map { it[0].toInt() })
+        ble.drop(); runCurrent(); job.cancel()
+    }
+
+    @Test
     fun `poison message is dropped while connected`() = runTest {
         val ble = FakeBleConnection()
         val uplink = FakeUplink().apply { poison = { it[0].toInt() == 66 } }

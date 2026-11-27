@@ -96,6 +96,9 @@ public class SpotflowGateway internal constructor(
     /** The dashboard's tracked peripherals, protected by [lifecycleLock]. */
     private val tracked = LinkedHashMap<String, DeviceDiagnostics>()
 
+    /** Counts attachments that ended, to order the rows of devices no longer attached. */
+    private var endedCount = 0L
+
     /** One RAM and one flash budget shared by every device (see [BufferPool]). */
     private val buffers: BufferPool = run {
         val store = MessageStore.acquire(appContext, options.flashBufferBytes)
@@ -226,6 +229,8 @@ public class SpotflowGateway internal constructor(
                     it.remove(session)
                     if (it.isEmpty()) sessions.remove(address)
                 }
+                if (!hasAttachment(address)) tracked[address]?.let { it.endedOrder = ++endedCount }
+                pruneInactive()
                 result
             }
             attachment.finish(result)
@@ -252,6 +257,18 @@ public class SpotflowGateway internal constructor(
     }
 
     /**
+     * Keeps the rows of devices no longer attached to [MAX_INACTIVE_ROWS], dropping those whose attachments
+     * ended first: a host attaching ever new peripherals must not grow the report without bound. Called
+     * under [lifecycleLock].
+     */
+    private fun pruneInactive() {
+        val inactive = tracked.filterKeys { !hasAttachment(it) }
+        if (inactive.size <= MAX_INACTIVE_ROWS) return
+        inactive.entries.sortedBy { it.value.endedOrder }.take(inactive.size - MAX_INACTIVE_ROWS)
+            .forEach { tracked.remove(it.key) }
+    }
+
+    /**
      * Requests shutdown and returns immediately. Attachments end as [AttachmentEnd.Reason.DETACHED].
      * Resources are released and unsent data is handed off to the flash tier (if configured) in the
      * background. This does not wait for cloud delivery. This gateway cannot accept new attachments.
@@ -270,13 +287,16 @@ public class SpotflowGateway internal constructor(
     }
 
     private fun errorOf(error: Throwable): DeviceError {
-        val kind = when (error) {
-            is MqttAuthException -> DeviceError.Kind.AUTH_REJECTED
-            is DeviceIngestKeyException -> DeviceError.Kind.DEVICE_INGEST_KEY
-            is DuplicateDeviceException -> DeviceError.Kind.DUPLICATE_DEVICE
+        val gattStatus = (error as? DeviceIngestKeyException)?.gattStatus
+            ?: generateSequence(error) { it.cause }.filterIsInstance<BleLinkException>().firstNotNullOfOrNull { it.gattStatus }
+        val kind = when {
+            error is MqttAuthException -> DeviceError.Kind.AUTH_REJECTED
+            error is DeviceIngestKeyException -> DeviceError.Kind.DEVICE_INGEST_KEY
+            error is DuplicateDeviceException -> DeviceError.Kind.DUPLICATE_DEVICE
+            gattStatus != null && LinkConnection.needsPairing(gattStatus) -> DeviceError.Kind.PAIRING_REQUIRED
             else -> DeviceError.Kind.BLUETOOTH
         }
-        return DeviceError(kind, error.message ?: error.javaClass.simpleName)
+        return DeviceError(kind, error.message ?: error.javaClass.simpleName, gattStatus)
     }
 
     public companion object {
@@ -297,5 +317,8 @@ public class SpotflowGateway internal constructor(
             )
 
         private const val TAG = "SpotflowGateway"
+
+        /** Rows of devices that are no longer attached, kept at most; see [DeviceReport][io.spotflow.ble.diagnostics.DeviceReport]. */
+        internal const val MAX_INACTIVE_ROWS = 64
     }
 }

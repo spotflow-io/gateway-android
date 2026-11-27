@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.os.Build
+import androidx.annotation.RequiresApi
 import io.spotflow.ble.BleLink
 import io.spotflow.ble.BleLinkException
 import io.spotflow.ble.GattRef
@@ -37,8 +38,11 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * As a second line of defence against a host that forwards its own operations' callbacks, a callback
  * only completes the operation it answers: a result for another characteristic is ignored.
+ *
+ * Every event is passed on to [delegate] once this client has seen it — exactly as Android would have
+ * delivered it, had [delegate] been registered with the GATT itself.
  */
-internal class GattClient {
+internal class GattClient(private val delegate: BluetoothGattCallback? = null) {
     private enum class Kind { READ, WRITE, DESCRIPTOR }
 
     /** The outstanding operation, completed by the callback that answers it. */
@@ -78,26 +82,30 @@ internal class GattClient {
     /** The callback the host registers, or forwards its GATT's events to. */
     val callback: BluetoothGattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            if (!ours(gatt)) return
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> if (status == BluetoothGatt.GATT_SUCCESS) {
-                    // A new connection: its MTU starts from the minimum again.
-                    mtu = FrameCodec.MIN_MTU
-                    if (linkDown.isCompleted) linkDown = CompletableDeferred()
-                }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    subscriptions.clear()
-                    linkDown.complete(Unit)
-                    pending?.result?.completeExceptionally(BleLinkException("device disconnected, status=$status"))
+            if (ours(gatt)) {
+                when (newState) {
+                    BluetoothProfile.STATE_CONNECTED -> if (status == BluetoothGatt.GATT_SUCCESS) {
+                        // A new connection: its MTU starts from the minimum again.
+                        mtu = FrameCodec.MIN_MTU
+                        if (linkDown.isCompleted) linkDown = CompletableDeferred()
+                    }
+                    BluetoothProfile.STATE_DISCONNECTED -> {
+                        subscriptions.clear()
+                        linkDown.complete(Unit)
+                        pending?.result?.completeExceptionally(BleLinkException("device disconnected, status=$status", status))
+                    }
                 }
             }
+            delegate?.onConnectionStateChange(gatt, status, newState)
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             if (ours(gatt) && status == BluetoothGatt.GATT_SUCCESS) this@GattClient.mtu = mtu
+            delegate?.onMtuChanged(gatt, mtu, status)
         }
 
         // API 33+ delivers the value directly.
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
@@ -105,6 +113,7 @@ internal class GattClient {
             status: Int,
         ) {
             if (ours(gatt)) completeRead(characteristic.uuid, value, status)
+            delegate?.onCharacteristicRead(gatt, characteristic, value, status)
         }
 
         @Deprecated("Deprecated in API 33")
@@ -117,6 +126,7 @@ internal class GattClient {
             if (ours(gatt) && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
                 completeRead(characteristic.uuid, characteristic.value ?: ByteArray(0), status)
             }
+            delegate?.onCharacteristicRead(gatt, characteristic, status)
         }
 
         override fun onCharacteristicWrite(
@@ -124,8 +134,8 @@ internal class GattClient {
             characteristic: BluetoothGattCharacteristic,
             status: Int,
         ) {
-            if (!ours(gatt)) return
-            complete(Kind.WRITE, characteristic.uuid, status, Unit) { "characteristic write failed: $it" }
+            if (ours(gatt)) complete(Kind.WRITE, characteristic.uuid, status, Unit) { "characteristic write failed: $it" }
+            delegate?.onCharacteristicWrite(gatt, characteristic, status)
         }
 
         override fun onDescriptorWrite(
@@ -133,18 +143,22 @@ internal class GattClient {
             descriptor: BluetoothGattDescriptor,
             status: Int,
         ) {
-            if (!ours(gatt) || descriptor.uuid != GattProfile.CCCD) return
-            val characteristic = descriptor.characteristic?.uuid ?: return
-            complete(Kind.DESCRIPTOR, characteristic, status, Unit) { "descriptor write failed: $it" }
+            val characteristic = descriptor.characteristic?.uuid
+            if (ours(gatt) && descriptor.uuid == GattProfile.CCCD && characteristic != null) {
+                complete(Kind.DESCRIPTOR, characteristic, status, Unit) { "descriptor write failed: $it" }
+            }
+            delegate?.onDescriptorWrite(gatt, descriptor, status)
         }
 
         // API 33+ notification signature.
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
             if (ours(gatt)) onNotification(characteristic.uuid, value)
+            delegate?.onCharacteristicChanged(gatt, characteristic, value)
         }
 
         @Deprecated("Deprecated in API 33")
@@ -156,6 +170,45 @@ internal class GattClient {
             if (ours(gatt) && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
                 onNotification(characteristic.uuid, characteristic.value ?: ByteArray(0))
             }
+            delegate?.onCharacteristicChanged(gatt, characteristic)
+        }
+
+        // ---- events only the delegate is interested in ----
+
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            delegate?.onServicesDiscovered(gatt, status)
+        }
+
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+        override fun onDescriptorRead(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int, value: ByteArray) {
+            delegate?.onDescriptorRead(gatt, descriptor, status, value)
+        }
+
+        @Deprecated("Deprecated in API 33")
+        @Suppress("DEPRECATION")
+        override fun onDescriptorRead(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            delegate?.onDescriptorRead(gatt, descriptor, status)
+        }
+
+        override fun onReliableWriteCompleted(gatt: BluetoothGatt, status: Int) {
+            delegate?.onReliableWriteCompleted(gatt, status)
+        }
+
+        override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
+            delegate?.onReadRemoteRssi(gatt, rssi, status)
+        }
+
+        override fun onPhyUpdate(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+            delegate?.onPhyUpdate(gatt, txPhy, rxPhy, status)
+        }
+
+        override fun onPhyRead(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+            delegate?.onPhyRead(gatt, txPhy, rxPhy, status)
+        }
+
+        @RequiresApi(Build.VERSION_CODES.S)
+        override fun onServiceChanged(gatt: BluetoothGatt) {
+            delegate?.onServiceChanged(gatt)
         }
     }
 
@@ -253,7 +306,7 @@ internal class GattClient {
         override suspend fun read(ref: GattRef): ByteArray = queued {
             ensureUp()
             operation(Kind.READ, ref.characteristic) { g ->
-                check(g.readCharacteristic(characteristic(g, ref))) { "readCharacteristic(${GattProfile.name(ref.characteristic)}) rejected" }
+                accepted(g.readCharacteristic(characteristic(g, ref))) { "readCharacteristic(${GattProfile.name(ref.characteristic)}) rejected" }
             } as ByteArray
         }
 
@@ -298,9 +351,9 @@ internal class GattClient {
     private suspend fun writeCccd(ref: GattRef, enable: Boolean) {
         operation(Kind.DESCRIPTOR, ref.characteristic) { g ->
             val characteristic = characteristic(g, ref)
-            check(g.setCharacteristicNotification(characteristic, enable)) { "setCharacteristicNotification rejected" }
+            accepted(g.setCharacteristicNotification(characteristic, enable)) { "setCharacteristicNotification rejected" }
             val cccd = characteristic.getDescriptor(GattProfile.CCCD)
-                ?: error("${GattProfile.name(ref.characteristic)} is missing its CCCD descriptor")
+                ?: throw BleLinkException("${GattProfile.name(ref.characteristic)} is missing its CCCD descriptor")
             val value = if (enable) {
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
             } else {
@@ -308,12 +361,12 @@ internal class GattClient {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val status = g.writeDescriptor(cccd, value)
-                check(status == BluetoothStatusCodes.SUCCESS) { "writeDescriptor rejected: $status" }
+                accepted(status == BluetoothStatusCodes.SUCCESS) { "writeDescriptor rejected: $status" }
             } else {
                 @Suppress("DEPRECATION")
                 run {
                     cccd.value = value
-                    check(g.writeDescriptor(cccd)) { "writeDescriptor rejected" }
+                    accepted(g.writeDescriptor(cccd)) { "writeDescriptor rejected" }
                 }
             }
         }
@@ -323,15 +376,20 @@ internal class GattClient {
     private fun writeNoResponse(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val status = g.writeCharacteristic(ch, value, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-            check(status == BluetoothStatusCodes.SUCCESS) { "writeCharacteristic rejected: $status" }
+            accepted(status == BluetoothStatusCodes.SUCCESS) { "writeCharacteristic rejected: $status" }
         } else {
             @Suppress("DEPRECATION")
             run {
                 ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                 ch.value = value
-                check(g.writeCharacteristic(ch)) { "writeCharacteristic rejected" }
+                accepted(g.writeCharacteristic(ch)) { "writeCharacteristic rejected" }
             }
         }
+    }
+
+    /** Fails the operation, as [BleLink] requires, if Android refused to issue it. */
+    private inline fun accepted(issued: Boolean, what: () -> String) {
+        if (!issued) throw BleLinkException(what())
     }
 
     private fun requireGatt(): BluetoothGatt =
@@ -339,5 +397,5 @@ internal class GattClient {
 
     private fun characteristic(g: BluetoothGatt, ref: GattRef): BluetoothGattCharacteristic =
         g.getService(ref.service)?.getCharacteristic(ref.characteristic)
-            ?: error("characteristic ${GattProfile.name(ref.characteristic)} not found")
+            ?: throw BleLinkException("characteristic ${GattProfile.name(ref.characteristic)} not found")
 }

@@ -1,12 +1,15 @@
 package io.spotflow.ble
 
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.mockk.verify
 import io.spotflow.ble.protocol.FrameCodec
+import io.spotflow.ble.protocol.GattProfile
 import io.spotflow.ble.protocol.MessageType
 import io.spotflow.ble.transport.FakePeripheral
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -137,6 +140,57 @@ class GattBridgeTest {
         assertArrayEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, peripheral.cccdWrites[2])
         assertTrue(gateway.diagnosticsSnapshot().devices.single().attachmentState is AttachmentState.Ready)
         assertEquals(0L, testScheduler.currentTime)
+    }
+
+    @Test
+    fun `a delegate gets every event, as Android would have delivered it`() = attachTest { gateway, _ ->
+        val events = mutableListOf<String>()
+        val hosted = GattBridge(object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                events += "state $newState"
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                events += "services"
+            }
+
+            override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                events += "mtu $mtu"
+            }
+
+            // Only the overload every Android version reaches: from API 33 the framework's newer one calls it.
+            @Deprecated("Deprecated in API 33")
+            override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+                events += "read ${GattProfile.name(characteristic.uuid)}"
+            }
+
+            override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
+                events += "rssi $rssi"
+            }
+        })
+        // The host registered hosted.callback with connectGatt: the stack talks to the bridge only.
+        hosted.callback.onConnectionStateChange(peripheral.gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+        hosted.callback.onServicesDiscovered(peripheral.gatt, BluetoothGatt.GATT_SUCCESS)
+        hosted.callback.onMtuChanged(peripheral.gatt, 247, BluetoothGatt.GATT_SUCCESS)
+
+        val link = hosted.link(peripheral.gatt)
+        assertEquals("the bridge followed the MTU", 244, link.maxWritePayloadBytes)
+        val attachment = gateway.attach(link)
+        runCurrent()
+        while (peripheral.deliver(hosted.callback)) runCurrent()
+        assertEquals(AttachmentState.Ready("attached-device"), attachment.state.value)
+
+        // The host's own operation, answered through the bridge.
+        launch { hosted.runExclusive { hosted.callback.onReadRemoteRssi(it, -60, BluetoothGatt.GATT_SUCCESS) } }
+        runCurrent()
+
+        assertEquals(
+            listOf(
+                "state ${BluetoothProfile.STATE_CONNECTED}", "services", "mtu 247",
+                "read Capabilities", "read Device ID", "read Session Metadata", "rssi -60",
+            ),
+            events,
+        )
     }
 
     @Test

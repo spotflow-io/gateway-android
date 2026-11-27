@@ -17,30 +17,38 @@ import java.util.UUID
 public object GattProfile {
 
     /** The Spotflow Observability Service advertised by a device running the Device SDK. */
+    @JvmField
     public val SERVICE: UUID = UUID.fromString("26530001-81E5-4861-82AE-2C92E6887922")
 
     /**
      * Read-only. Protocol version (major, minor) and, from protocol 1.1, a feature byte (bit 0: the device
      * takes OTA updates through the gateway). Never requires an encrypted link.
      */
+    @JvmField
     public val CAPABILITIES: UUID = UUID.fromString("26530002-81E5-4861-82AE-2C92E6887922")
 
     /** Read-only. The device ID; used verbatim as the MQTT username towards the Spotflow cloud. */
+    @JvmField
     public val DEVICE_ID: UUID = UUID.fromString("26530003-81E5-4861-82AE-2C92E6887922")
 
     /** Read-only. CBOR-encoded session metadata, published to `ingest-cbor` when a session opens. */
+    @JvmField
     public val SESSION_METADATA: UUID = UUID.fromString("26530004-81E5-4861-82AE-2C92E6887922")
 
     /** Notify. Device -> gateway stream (telemetry, reported configuration; OTA messages in 1.1). */
+    @JvmField
     public val TX_STREAM: UUID = UUID.fromString("26530005-81E5-4861-82AE-2C92E6887922")
 
     /** Write without response. Gateway -> device stream (desired configuration; OTA messages in 1.1). */
+    @JvmField
     public val RX_STREAM: UUID = UUID.fromString("26530006-81E5-4861-82AE-2C92E6887922")
 
     /** Read-only and optional. MQTT password for gateways configured to use a device's ingest key. */
+    @JvmField
     public val INGEST_KEY: UUID = UUID.fromString("26530007-81E5-4861-82AE-2C92E6887922")
 
     /** Client Characteristic Configuration Descriptor, used to enable notifications on TX_STREAM. */
+    @JvmField
     public val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
 
     /** Whether this scan result lists [SERVICE]. A false result does not rule out the connected GATT service. */

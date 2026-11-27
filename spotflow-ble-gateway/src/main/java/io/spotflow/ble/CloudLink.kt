@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -214,6 +215,10 @@ internal class CloudLink(
                     backoff = INITIAL_BACKOFF_MS
                 }
                 try {
+                    // The broker resends what is unacknowledged as soon as the connection is up, before
+                    // connect() returns: match those against the queued messages from here on.
+                    desired.expectRedelivery()
+                    otaCommands.expectRedelivery()
                     uplink.connect()
                     authRejected = false
                     authBackoff = AUTH_RETRY_INITIAL_MS
@@ -230,7 +235,7 @@ internal class CloudLink(
                     authRejected = true
                     diagnostics?.update {
                         cloudConnected = false
-                        cloudError = null
+                        cloudError = DeviceError(DeviceError.Kind.AUTH_REJECTED, auth.describe())
                     }
                     if (!stopWhenEmpty) throw auth // reported in AttachmentEnd
                     persistBacklog()
@@ -468,6 +473,11 @@ internal class CloudLink(
      *
      * A session starts by replaying the last configuration written to the device (unless newer ones are
      * pending), since the device may have rebooted and lost it — see [lastWrittenDesired].
+     *
+     * A failed write is retried. It says nothing about the configuration — the link timed out, dropped,
+     * or the stack refused the write — so it is never dropped for it: after [MAX_DESIRED_ATTEMPTS] failures
+     * in a row this session stops trying, and the configuration waits, unacknowledged, for the next one.
+     * Only a configuration that can never be written (too large to frame) is dropped.
      */
     suspend fun deliverDesiredConfiguration(write: suspend (ByteArray) -> Unit) {
         val replay = lastWrittenDesired.takeIf { desired.isEmpty }
@@ -481,6 +491,7 @@ internal class CloudLink(
                 Slog.w(TAG, "desired configuration re-send failed: ${t.message}")
             }
         }
+        var failures = 0
         while (true) {
             val head = desired.next()
             val done = try {
@@ -495,15 +506,17 @@ internal class CloudLink(
                 true
             } catch (t: Throwable) {
                 Slog.w(TAG, "desired configuration write failed: ${t.message}")
-                if (++head.failures >= MAX_DESIRED_ATTEMPTS) {
-                    Slog.w(TAG, "dropping desired configuration after ${head.failures} failures")
-                    true
-                } else {
-                    delay(DESIRED_RETRY_MS)
-                    false
+                if (++failures >= MAX_DESIRED_ATTEMPTS) {
+                    Slog.w(TAG, "desired configuration for $deviceId left pending for the next session after $failures failures")
+                    awaitCancellation()
                 }
+                delay(DESIRED_RETRY_MS)
+                false
             }
-            if (done) desired.complete(head)
+            if (done) {
+                failures = 0
+                desired.complete(head)
+            }
         }
     }
 
@@ -604,27 +617,40 @@ private class InboundQueue {
     class Entry(val payload: ByteArray, ack: () -> Unit) {
         /** One per delivery by the broker: it sends an unacknowledged message again on every reconnect. */
         val acks = arrayListOf(ack)
-        var failures = 0
     }
 
     private val entries = ArrayDeque<Entry>()
     private val signal = Channel<Unit>(Channel.CONFLATED)
 
+    /**
+     * Where the broker's redelivery has got to: the index of the queued message it resends next. On a new
+     * connection it resends every unacknowledged message, in order and before anything new — which is
+     * what the queue holds, in the same order.
+     */
+    private var redelivered = 0
+
     val isEmpty: Boolean get() = synchronized(this) { entries.isEmpty() }
 
+    /** A new connection is being made: the broker is about to resend the queued messages, from the oldest. */
+    fun expectRedelivery() = synchronized(this) { redelivered = 0 }
+
     /**
-     * Queues [payload]. The same payload as the last one waiting — what the broker sends on every reconnect
-     * while a message is unacknowledged — joins it instead of queueing up behind it. Returns how many are
-     * waiting, or null if it joined.
+     * Queues [payload] — unless it is the broker resending a message that is queued already, which then
+     * joins it: the queued message next in line for redelivery, or (outside a redelivery) the last one
+     * waiting. A message that matches neither is new, even if an older one has the same payload (e.g. a
+     * setting changed and then changed back). Returns how many are waiting, or null if it joined.
      */
     fun offer(payload: ByteArray, ack: () -> Unit): Int? {
         val queued = synchronized(this) {
-            val last = entries.lastOrNull()
-            if (last != null && last.payload.contentEquals(payload)) {
-                last.acks += ack
+            val resent = entries.getOrNull(redelivered)?.takeIf { it.payload.contentEquals(payload) }
+                ?: entries.lastOrNull()?.takeIf { it.payload.contentEquals(payload) }
+            if (resent != null) {
+                resent.acks += ack
+                redelivered = entries.indexOf(resent) + 1
                 null
             } else {
                 entries.addLast(Entry(payload, ack))
+                redelivered = entries.size // anything new ends the redelivery
                 entries.size
             }
         }
@@ -646,6 +672,7 @@ private class InboundQueue {
         val acks = synchronized(this) {
             check(entries.firstOrNull() === entry) { "not the oldest message" }
             entries.removeFirst()
+            if (redelivered > 0) redelivered--
             entry.acks.toList()
         }
         acks.forEach { it() }

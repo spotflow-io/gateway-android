@@ -1,10 +1,10 @@
-name: Publish npm alpha
-run-name: Publish npm alpha of PR #${{ inputs.pr }}
+name: Stage npm alpha
+run-name: Stage npm alpha of PR #${{ inputs.pr }}
 
-# Publishes the npm alpha that CI built for a pull request: the tarballs of its latest successful CI run,
-# under the `alpha` dist-tag. This job runs no code from the pull request, only pnpm on its tarballs.
-# Publishing goes through npm trusted publishing: the `npm-alpha` environment accepts only runs from
-# main, so only the reviewed version of this file can publish.
+# Stages the npm alpha that CI built for a reviewed PR commit with the `alpha` dist-tag.
+# The staging job runs no code from the pull request, only pnpm on its tarballs.
+# The `npm-alpha` environment accepts only runs from main. An npm maintainer must approve
+# the staged packages before they go live.
 on:
   workflow_dispatch:
     inputs:
@@ -12,31 +12,43 @@ on:
         description: Pull request number
         required: true
         type: number
+      head_sha:
+        description: Full SHA of the reviewed PR head commit
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  publish:
-    name: Publish alpha of PR #${{ inputs.pr }}
+  preflight:
+    name: Identify reviewed alpha artifact
     if: github.repository == 'spotflow-io/gateway-android' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    environment: npm-alpha
     permissions:
-      actions: read # find the CI run and download its tarballs
+      actions: read
       contents: read
       pull-requests: read
-      id-token: write # npm trusted publishing
-    env:
-      PR: ${{ inputs.pr }}
+    outputs:
+      run: ${{ steps.ci.outputs.run }}
+      suffix: ${{ steps.ci.outputs.suffix }}
+      artifact_id: ${{ steps.ci.outputs.artifact_id }}
     steps:
-      - name: Find the PR's latest successful CI build
+      # Resolve the immutable artifact before the environment-gated job starts.
+      - name: Find the successful CI build for the reviewed commit
         id: ci
         env:
           GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          REVIEWED_SHA: ${{ inputs.head_sha }}
+        shell: bash
         run: |
           if [[ ! $PR =~ ^[1-9][0-9]*$ ]]; then
             echo '::error::Enter a positive pull request number.'
+            exit 1
+          fi
+          if [[ ! $REVIEWED_SHA =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Enter the full 40-character SHA of the reviewed PR commit.'
             exit 1
           fi
           read -r fork base head < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
@@ -46,21 +58,56 @@ jobs:
             echo "::error::Only PRs into main from branches of this repository get alphas. Push a fork's reviewed commits to a branch here first."
             exit 1
           fi
-          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&status=success&head_sha=$head" |
-            jq -c --arg repo "$GITHUB_REPOSITORY" --argjson pr "$PR" \
-              'first(.workflow_runs[] | select(.head_repository.full_name == $repo and any(.pull_requests[]; .number == $pr))) // empty')
-          if [[ -z $run ]]; then
-            echo "::error::CI has not passed for $head, the head of PR #$PR."
+          if [[ $head != "$REVIEWED_SHA" ]]; then
+            echo "::error::PR #$PR is no longer at reviewed commit $REVIEWED_SHA. Review the current head before publishing."
             exit 1
           fi
-          jq -r '"run=\(.id)\nsuffix=\(.run_number).\(.run_attempt)"' <<< "$run" >> "$GITHUB_OUTPUT"
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&status=success&head_sha=$REVIEWED_SHA" |
+            jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$REVIEWED_SHA" --argjson pr "$PR" \
+              'first(.workflow_runs[] | select(.head_sha == $sha and .head_repository.full_name == $repo and any(.pull_requests[]; .number == $pr))) // empty')
+          if [[ -z $run ]]; then
+            echo "::error::CI has not passed for $REVIEWED_SHA, the reviewed head of PR #$PR."
+            exit 1
+          fi
+          run_id=$(jq -r '.id' <<< "$run")
+          suffix=$(jq -r '"\(.run_number).\(.run_attempt)"' <<< "$run")
+          artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?name=npm-alpha" |
+            jq -c '[.artifacts[] | select(.name == "npm-alpha" and .expired == false)] | select(length == 1) | .[0]')
+          if [[ -z $artifact ]] || ! digest=$(jq -er '.digest | strings | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$artifact"); then
+            echo "::error::CI run $run_id must have exactly one unexpired npm-alpha artifact with a SHA-256 digest."
+            exit 1
+          fi
+          artifact_id=$(jq -r '.id' <<< "$artifact")
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
+          {
+            printf 'run=%s\nsuffix=%s\nartifact_id=%s\n' "$run_id" "$suffix" "$artifact_id"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '### Alpha selected for staging'
+            echo "- PR #$PR, reviewed commit: $REVIEWED_SHA"
+            echo "- [CI run]($run_url), run number and attempt: $suffix"
+            echo "- [Artifact $artifact_id]($run_url/artifacts/$artifact_id): $digest"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Download the tarballs CI built
+  publish:
+    name: Stage alpha of PR #${{ inputs.pr }}
+    needs: preflight
+    runs-on: ubuntu-24.04
+    environment: npm-alpha
+    permissions:
+      actions: read
+      contents: read
+      id-token: write # npm trusted publishing
+    env:
+      PR: ${{ inputs.pr }}
+    steps:
+      - name: Download the selected artifact by ID and verify its digest
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: npm-alpha
+          artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
+          digest-mismatch: error
           path: dist
-          run-id: ${{ steps.ci.outputs.run }}
+          run-id: ${{ needs.preflight.outputs.run }}
           github-token: ${{ github.token }}
 
       - name: Set up Node
@@ -77,16 +124,15 @@ jobs:
           tar -xzf "$RUNNER_TEMP/pnpm.tar.gz" -C "$RUNNER_TEMP/pnpm-bin"
           echo "$RUNNER_TEMP/pnpm-bin" >> "$GITHUB_PATH"
 
-      # The bridge goes first: the driver's peer dependency pins its exact version.
-      - name: Publish the bridge, then the BLE Manager driver
+      - name: Stage the bridge and BLE Manager driver
         env:
-          CI_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.ci.outputs.run }}
-          CI_SUFFIX: ${{ steps.ci.outputs.suffix }}
+          CI_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ needs.preflight.outputs.run }}
+          CI_SUFFIX: ${{ needs.preflight.outputs.suffix }}
         shell: bash
         run: |
           shopt -s nullglob
           archives=()
-          published=()
+          specs=()
           for package in react-native-ble-gateway react-native-ble-gateway-ble-manager; do
             tarballs=(dist/spotflow-"$package"-[0-9]*.tgz)
             if [[ ${#tarballs[@]} != 1 ]]; then
@@ -102,14 +148,22 @@ jobs:
               exit 1
             fi
             archives+=("./${tarballs[0]}")
-            published+=("@spotflow/$package@$version")
-          done
-          for archive in "${archives[@]}"; do
-            pnpm publish "$archive" --registry https://registry.npmjs.org --tag alpha --access public --ignore-scripts --no-git-checks
+            specs+=("@spotflow/$package@$version")
           done
           {
-            echo "Published the alpha of PR #$PR that [CI built]($CI_RUN). Install it with:"
+            echo "### npm alpha staging for PR #$PR ([CI build]($CI_RUN))"
+            echo
+            echo 'Review in npmjs.com → Staged Packages and approve the bridge before the BLE Manager driver with 2FA.'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for i in "${!archives[@]}"; do
+            pnpm stage publish "${archives[i]}" --registry https://registry.npmjs.org --tag alpha --access public --ignore-scripts --no-git-checks
+            printf -- "- Staged \`%s\`\n" "${specs[i]}" >> "$GITHUB_STEP_SUMMARY"
+          done
+          {
+            echo
+            echo 'After both packages are approved, install them with:'
             echo '~~~sh'
-            echo "pnpm add --save-exact ${published[*]}"
+            echo "pnpm add --save-exact ${specs[*]}"
             echo '~~~'
           } >> "$GITHUB_STEP_SUMMARY"

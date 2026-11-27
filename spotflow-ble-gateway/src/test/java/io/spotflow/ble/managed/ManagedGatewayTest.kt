@@ -111,6 +111,23 @@ class ManagedGatewayTest {
     }
 
     @Test
+    fun `a missing scan permission is reported, not thrown, and discovery starts once it is granted`() =
+        managedTest { managed ->
+            platform.scanPermissionDenied = true
+            started(managed) // does not throw
+
+            assertEquals(ScanState.RETRYING, managed.scanStatus.value.state)
+            assertTrue(managed.scanStatus.value.error.orEmpty().contains("BLUETOOTH_SCAN"))
+
+            platform.scanPermissionDenied = false // the user granted it
+            advanceTimeBy(5_001); runCurrent()
+            assertEquals(ScanStatus(ScanState.SCANNING), managed.scanStatus.value)
+            platform.advertise(address)
+            settle()
+            assertTrue(managed.state()?.attachmentState is AttachmentState.Ready)
+        }
+
+    @Test
     fun `a scan that dies while running is restarted`() = managedTest { managed ->
         started(managed)
 
@@ -546,10 +563,16 @@ internal class FakeManagedPlatform : ManagedPlatform {
     /** The next this-many scans fail to start. */
     var failingScans = 0
 
+    /** While set, scans fail as Android fails them without the scan permission. */
+    var scanPermissionDenied = false
+
     private val advertisements = Channel<Any>(Channel.UNLIMITED)
 
     override fun scan(lowPower: Boolean): Flow<String> = flow {
         scans += lowPower
+        if (scanPermissionDenied) {
+            throw SecurityException("Need android.permission.BLUETOOTH_SCAN permission for AttributionSource")
+        }
         if (failingScans > 0) {
             failingScans--
             throw IllegalStateException("BLE scan failed (error 2)")

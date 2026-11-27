@@ -133,11 +133,12 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
 
   npm-release:
-    name: Publish to npm
+    name: Stage on npm
     needs: github-release
     if: github.repository == 'spotflow-io/gateway-android'
     runs-on: ubuntu-latest
-    # npm trusted publishing: the `npm-release` environment accepts only runs for `v*` tags.
+    # The `npm-release` environment accepts only runs for `v*` tags.
+    # An npm maintainer must approve the staged packages before they go live.
     environment: npm-release
     permissions:
       contents: read
@@ -158,8 +159,9 @@ jobs:
       - name: Set up pnpm
         run: *setup_pnpm
 
-      # No checkout, dependency install, or lifecycle scripts in the publishing job.
-      - name: Publish the packed bridge, then the BLE Manager driver
+      # No checkout, dependency install, or lifecycle scripts in the staging job.
+      - name: Stage the packed bridge and BLE Manager driver
+        shell: bash
         run: |
           shopt -s nullglob
           bridge=(./dist/spotflow-react-native-ble-gateway-[0-9]*.tgz)
@@ -168,5 +170,13 @@ jobs:
             echo '::error::Expected one tarball for each npm package'
             exit 1
           fi
-          pnpm publish "${bridge[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --no-git-checks
-          pnpm publish "${driver[0]}" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --no-git-checks
+          {
+            echo '### npm release staging'
+            echo
+            echo 'Review in npmjs.com → Staged Packages and approve the bridge before the BLE Manager driver with 2FA.'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for archive in "${bridge[0]}" "${driver[0]}"; do
+            pnpm stage publish "$archive" --registry https://registry.npmjs.org --tag latest --access public --ignore-scripts --no-git-checks
+            printf -- "- Staged \`%s\`\n" "${archive##*/}" >> "$GITHUB_STEP_SUMMARY"
+          done

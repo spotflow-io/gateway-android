@@ -10,6 +10,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 
 /**
  * A host's [BleLink] under the test's control: it records every call, answers reads from [values], and
@@ -43,6 +44,9 @@ internal class FakeLink(
 
     /** The next call fails with this. */
     var failNext: Throwable? = null
+
+    /** Reading these characteristics fails with what they map to. */
+    val failReads = HashMap<UUID, Throwable>()
 
     var listener: NotificationListener? = null
         private set
@@ -86,7 +90,10 @@ internal class FakeLink(
     }
 
     override suspend fun read(ref: GattRef): ByteArray =
-        call("read ${GattProfile.name(ref.characteristic)}") { values.getValue(ref.characteristic) }
+        call("read ${GattProfile.name(ref.characteristic)}") {
+            failReads[ref.characteristic]?.let { throw it }
+            values.getValue(ref.characteristic)
+        }
 
     override suspend fun writeWithoutResponse(ref: GattRef, frames: List<ByteArray>) =
         call("write") { writes += frames }

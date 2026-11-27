@@ -1,5 +1,6 @@
 package io.spotflow.ble
 
+import android.bluetooth.BluetoothGatt
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.spotflow.ble.AttachmentEnd.Reason
@@ -228,6 +229,46 @@ class AttachmentTest {
         assertEquals(Reason.FAILED, end.reason)
         assertEquals(DeviceError.Kind.BLUETOOTH, end.error?.kind)
         assertEquals(AttachmentState.Ended(end), gateway.report()?.attachmentState)
+    }
+
+    @Test
+    fun `a device that requires pairing fails the attachment with a kind the host can act on`() = linkTest { gateway, _ ->
+        val link = FakeLink().apply {
+            failReads[GattProfile.DEVICE_ID] = BleLinkException("read failed", BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION)
+        }
+        val end = gateway.attach(link).also { runCurrent() }.awaitEnd()
+
+        assertEquals(Reason.FAILED, end.reason)
+        assertEquals(DeviceError.Kind.PAIRING_REQUIRED, end.error?.kind)
+        assertEquals(BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION, end.error?.gattStatus)
+    }
+
+    @Test
+    fun `another GATT failure is a Bluetooth error that carries its status`() = linkTest { gateway, _ ->
+        val link = FakeLink().apply { failReads[GattProfile.DEVICE_ID] = BleLinkException("read failed", 0x85) }
+        val end = gateway.attach(link).also { runCurrent() }.awaitEnd()
+
+        assertEquals(DeviceError.Kind.BLUETOOTH, end.error?.kind)
+        assertEquals(0x85, end.error?.gattStatus)
+    }
+
+    @Test
+    fun `the report keeps only the most recently ended of the devices no longer attached`() = linkTest { gateway, _ ->
+        val addresses = (0 until SpotflowGateway.MAX_INACTIVE_ROWS + 6).map { "AA:BB:CC:DD:%02X:%02X".format(it / 256, it % 256) }
+        val live = gateway.attach(FakeLink(address = "11:22:33:44:55:66", deviceId = "live"))
+        addresses.forEach { address ->
+            val link = FakeLink(address = address, deviceId = "device-$address")
+            gateway.attach(link)
+            runCurrent()
+            link.drop()
+            runCurrent()
+        }
+
+        val reported = gateway.diagnosticsSnapshot().devices.map { it.address }
+        assertEquals(SpotflowGateway.MAX_INACTIVE_ROWS + 1, reported.size)
+        assertTrue("an attached device is always reported", "11:22:33:44:55:66" in reported)
+        assertEquals(addresses.takeLast(SpotflowGateway.MAX_INACTIVE_ROWS), reported - "11:22:33:44:55:66")
+        assertNull(live.endIfFinished())
     }
 
     @Test

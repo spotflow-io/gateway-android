@@ -13,20 +13,26 @@ internal data class GatewayConfig(val ingestKey: String?, val options: GatewayOp
 /**
  * The one gateway of the process. It outlives React contexts, so a JS reload (or Headless JS next to the
  * UI) configures the gateway it already has and keeps uploading what is buffered.
+ *
+ * Every gateway it creates gets an ID, which JS handles carry: a handle acts on its own gateway only, never
+ * on one that replaced it (e.g. configured differently by another React context).
  */
 internal object GatewayHolder {
     private var config: GatewayConfig? = null
     private var gateway: SpotflowGateway? = null
+    private var id = 0
 
-    val current: SpotflowGateway? @Synchronized get() = gateway
+    /** The gateway with [id], while it is the current one. */
+    @Synchronized
+    fun current(id: Int): SpotflowGateway? = gateway?.takeIf { id == this.id }
 
     /**
-     * Returns the gateway for [config], creating it on first use. Another configuration shuts the previous
-     * gateway down first; its unsent data is handed over through the flash buffer if enabled.
+     * Returns the ID of the gateway for [config], creating it on first use. Another configuration shuts the
+     * previous gateway down first; its unsent data is handed over through the flash buffer if enabled.
      */
     @Synchronized
-    fun configure(context: Context, config: GatewayConfig): SpotflowGateway {
-        gateway?.let { if (config == this.config) return it }
+    fun configure(context: Context, config: GatewayConfig): Int {
+        if (gateway != null && config == this.config) return id
         gateway?.shutdown()
         gateway = null
         val created = if (config.ingestKey == null) {
@@ -36,11 +42,13 @@ internal object GatewayHolder {
         }
         this.config = config
         gateway = created
-        return created
+        return ++id
     }
 
+    /** Shuts the gateway with [id] down, unless another one has replaced it already. */
     @Synchronized
-    fun shutdown() {
+    fun shutdown(id: Int) {
+        if (id != this.id) return
         gateway?.shutdown()
         gateway = null
         config = null

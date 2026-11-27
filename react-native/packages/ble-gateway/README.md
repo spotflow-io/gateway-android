@@ -42,30 +42,55 @@ android {
 
 Apps generated with `expo prebuild` set the same values with `expo-build-properties`
 (`android.minSdkVersion`, `android.packagingOptions`). The module adds its bundled Maven repository to
-the build itself, and needs no permissions beyond the app's BLE permissions and `INTERNET`.
+the build itself, and needs no permissions beyond the app's BLE permissions, `INTERNET` and
+`ACCESS_NETWORK_STATE` (the last two come with it). It leaves the app's manifest — and what other
+libraries declare in theirs — alone; it only removes the gateway's foreground service, which it never
+starts.
 
 ## Usage
 
 ```ts
+import { Platform } from 'react-native';
 import { createGateway, readDeviceId } from '@spotflow/react-native-ble-gateway';
 import { bleManagerLink } from '@spotflow/react-native-ble-gateway-ble-manager';
 
-const gateway = await createGateway(); // read each device's ingest key over GATT
+// The gateway runs on Android only: the app decides whether to use it.
+const spotflow = Platform.OS === 'android';
 
-// Once the app has connected, retrieved services and negotiated the MTU:
-const link = bleManagerLink(peripheralId, { mtu });
-if (allowedDeviceIds.has(await readDeviceId(link))) {
+// When the app starts, so data buffered by an earlier run starts uploading.
+// The default reads each device's ingest key over GATT.
+if (spotflow) createGateway().catch((error) => console.error('Spotflow gateway unavailable', error));
+
+// Once the app has connected to a peripheral, retrieved its services and negotiated the MTU.
+// `peripheralId` is the app's BLE library's ID for it: on Android, its Bluetooth address.
+async function relay(peripheralId: string, mtu: number) {
+  if (!spotflow) return;
+  const gateway = await createGateway(); // same options: the running gateway
+  const link = bleManagerLink(peripheralId, { mtu });
+  if (!allowedDeviceIds.has(await readDeviceId(link))) return; // the Spotflow device ID, read over GATT
   const attachment = await gateway.attach(link);
   attachment.onStateChange((state) => console.log('relay', state.type));
   attachment.ended.then((end) => console.log('relay ended', end.reason, end.error?.message));
 }
 ```
 
+- `createGateway()` returns the running gateway whenever it is called with the same options, so the app
+  can call it where it needs the gateway. It rejects with an error whose `code` is
+  `E_UNSUPPORTED_PLATFORM` off Android, and `E_NOT_LINKED` on Android if the native module is not in the
+  build (rebuild the app after installing the package). An app that builds for Android both with and
+  without the module adds its own build flag to the check.
+- A link's `address` is the peripheral's Bluetooth address, upper case — for `react-native-ble-manager`,
+  the peripheral ID it hands out (see the [driver's README](../ble-gateway-ble-manager#peripheral-ids)).
+  The gateway tells peripherals apart by it. The Spotflow device ID is something else: the device
+  reports it over GATT, and `readDeviceId(link)` reads it.
 - `attach()` resolves when the relay has started, not when it is ready. `attachment.state` goes from
   `starting` to `ready` (the gateway can receive and buffer the device's messages, even while MQTT is
   disconnected) to `ended`.
 - An attachment ends `DISCONNECTED` when the link drops. After the app reconnects, attach a **new** link.
   Buffered data keeps uploading in the meantime.
+- An attachment that ends `FAILED` says why in `end.error`: its `kind` — e.g. `PAIRING_REQUIRED` when the
+  device needs an encrypted link, so the app can ask the user to pair — and `gattStatus`, the Bluetooth
+  stack's status where there was one. Show `message`, don't parse it.
 - `attachment.detach()` stops relaying and turns the device's notifications off; the BLE link stays up.
 - Attaching the same peripheral again replaces its attachment (`REPLACED`).
 - `gateway.diagnosticsSnapshot()` reports each device's relay and cloud state, message counters, OTA
@@ -97,6 +122,10 @@ add `ingestKeySource: 'gateway'` when migrating. Neither mode falls back to the 
 - When the React context is destroyed (a JS reload, for example), every attachment ends `DISCONNECTED`:
   no JS driver is left to serve the links. The app attaches again once it has reconnected.
 - `gateway.shutdown()` ends all attachments (`DETACHED`) and stops the gateway.
+- A gateway handle stands for the gateway it was created for. Once that one is shut down or replaced
+  (`createGateway()` with other options, also from another React context), the handle's `attach()` and
+  `diagnosticsSnapshot()` reject and its `shutdown()` does nothing; call `createGateway()` for a handle to
+  the current gateway.
 - The package does not relay with the screen off or after the process dies. In device-key mode, data in
   flash waits for a device to reattach with the same ID, key and broker endpoint. A rotated key or switch
   to gateway-key mode does not upload that backlog under different credentials.

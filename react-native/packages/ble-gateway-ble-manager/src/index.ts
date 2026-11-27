@@ -11,11 +11,15 @@ let driver: BleManagerDriver | undefined;
  * peripheral is connected, its services are retrieved and any MTU exchange has finished:
  *
  * ```ts
- * await BleManager.connect(id);
- * await BleManager.retrieveServices(id);
- * const mtu = await BleManager.requestMTU(id, 247);
- * const attachment = await gateway.attach(bleManagerLink(id, { mtu }));
+ * await BleManager.connect(peripheralId);
+ * await BleManager.retrieveServices(peripheralId);
+ * const mtu = await BleManager.requestMTU(peripheralId, 247);
+ * const attachment = await gateway.attach(bleManagerLink(peripheralId, { mtu }));
  * ```
+ *
+ * `peripheralId` is the ID `react-native-ble-manager` gives the peripheral (`Peripheral.id`, from a scan,
+ * `getConnectedPeripherals()` or `getBondedPeripherals()`): on Android, its Bluetooth address. It becomes
+ * the link's `address`, by which the gateway tells peripherals apart.
  *
  * A link serves one connection: after a reconnect, create a new one.
  */

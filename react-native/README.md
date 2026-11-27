@@ -39,30 +39,38 @@ provides the React Native Gradle plugin and codegen. Its unit tests run there to
 The Android AAR, POM and Gradle metadata ship inside `@spotflow/react-native-ble-gateway`, so apps such
 as SimpleLink Connect install both packages from npm and need no Maven repository for the gateway.
 
-GitHub Actions publishes both packages with [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/):
-there are no npm tokens, and every version carries provenance linking it to the workflow run that
-published it. Publishing jobs never run the packages' code or scripts; they publish tarballs that CI
-built and tested.
+GitHub Actions stages both packages with [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/),
+without npm tokens. The staging jobs upload tarballs built and tested by CI without running package
+code or scripts. The versions go live only after an npm maintainer reviews and approves them with 2FA.
 
 |                 | Alpha                                         | Stable                         |
 | --------------- | --------------------------------------------- | ------------------------------ |
 | Built by        | CI, for same-repository pull requests          | `release.yml`, for a `v*` tag  |
-| Published by    | **Publish npm alpha**, run from `main`        | `release.yml`, automatically   |
+| Staged by       | **Stage npm alpha**, run from `main`          | `release.yml`, automatically   |
 | npm dist-tag    | `alpha`                                       | `latest`                       |
 | Version         | `0.1.0-alpha.<pr>.<ci-run>.<attempt>`         | `0.1.0`                        |
+
+For either workflow, open **Staged Packages** on npmjs.com after CI succeeds and approve the bridge
+(`@spotflow/react-native-ble-gateway`) before the BLE Manager driver. Alternatively, use the stage IDs
+from the job log with `pnpm stage view <stage-id>` and `pnpm stage approve <stage-id>`.
 
 ### Alphas
 
 1. Open a pull request into `main` from a branch of this repository and wait for CI to pass. Fork PRs
    can't get alphas: push their reviewed commits to a branch here first.
-2. Run **Actions → Publish npm alpha → Run workflow** on `main` with the PR number, or:
+2. Review the PR commit, then run **Actions → Stage npm alpha → Run workflow** on `main` with the PR
+   number and full SHA of the commit you reviewed. For example, for PR #8:
 
    ```sh
-   gh workflow run publish-alpha.yml --repo spotflow-io/gateway-android --ref main -f pr=<number>
+   gh workflow run publish-alpha.yml --repo spotflow-io/gateway-android --ref main \
+     -f pr=8 -f head_sha='<reviewed-commit-sha>'
    ```
 
-   It publishes the tarballs of the PR head's latest successful CI run. The run summary has the
-   `pnpm add` command. In apps, pin the exact versions, not the `alpha` tag.
+   Preflight stops if the current PR head doesn't match the supplied SHA. Its summary records the
+   commit, CI run, artifact ID, and SHA-256 digest before the staging job starts. The staging
+   job uses that specific artifact even if the PR moves or another CI run finishes later. The final
+   summary has the `pnpm add` command to run after approval. In apps, pin the exact versions, not the
+   `alpha` tag.
 
 Every CI run has its own version, and the Android gateway inside gets one to match (for example
 `0.4.0-alpha.8.57.1`). The driver's peer dependency pins the exact bridge alpha. To publish a newer
@@ -76,11 +84,11 @@ alpha, push to the PR or re-run all jobs in its CI workflow. Versions can't be p
    --ignore-scripts --ignore-pnpmfile`). The driver's workspace peer range is converted to a registry
    semver range when packed.
 2. Merge, then tag the merged commit `v<spotflowVersion>`. `release.yml` tests and packs both packages,
-   attaches the tarballs to the GitHub Release, and publishes them to npm, bridge first.
+   attaches the tarballs to the GitHub Release, and stages them on npm with the `latest` dist-tag.
 
-npm versions can't be published twice. If the npm job published the bridge but not the driver, a
-re-run fails on the bridge: publish the driver's tarball from the GitHub Release by hand instead
-(`pnpm publish <tarball> --tag latest --access public --ignore-scripts --no-git-checks`).
+If only one upload succeeds, check **Staged Packages** before retrying. Don't restage a version that's
+already staged or live. A maintainer can stage just the missing tarball from the GitHub Release with
+`pnpm stage publish <tarball> --tag latest --access public --ignore-scripts --no-git-checks`.
 
 ### One-time setup
 
@@ -89,19 +97,13 @@ re-run fails on the bridge: publish the driver's tarball from the GitHub Release
    that names a missing environment creates it without these rules.
    - `npm-alpha`, with deployment branches limited to `main`;
    - `npm-release`, with deployment tags limited to `v*`.
-2. **npm** (an `@spotflow` owner): npm can only trust a workflow for a package that exists, so publish
-   the first alpha by hand. Download the `npm-alpha` artifact of a PR's successful CI run and publish
-   it, bridge first, with 2FA:
+   These environments restrict which Git refs can reach each job, not which versions or dist-tags
+   npm accepts. One shared environment would have to admit both kinds of refs.
 
-   ```sh
-   gh run download <ci-run-id> --repo spotflow-io/gateway-android --name npm-alpha --dir npm-alpha
-   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-<version>.tgz --tag alpha --access public --ignore-scripts --no-git-checks
-   pnpm publish ./npm-alpha/spotflow-react-native-ble-gateway-ble-manager-<version>.tgz --tag alpha --access public --ignore-scripts --no-git-checks
-   ```
-
-3. **npm**: in each package's **Settings → Trusted publishing**, add two GitHub Actions publishers for
-   `spotflow-io/gateway-android` and allow direct publishing in npm's settings: workflow `publish-alpha.yml` with
-   environment `npm-alpha`, and workflow `release.yml` with environment `npm-release`. A new
-   publisher expires unless it publishes within two days, so add each one shortly before its first run.
-4. **npm**: once both publishers have worked, set each package's **Publishing access** to require 2FA
+2. **npm** (an `@spotflow` owner): in each package's **Settings → Trusted publishing**, add two GitHub
+   Actions publishers for `spotflow-io/gateway-android`: workflow `publish-alpha.yml` with environment
+   `npm-alpha`, and workflow `release.yml` with environment `npm-release`. Leave **Allow npm publish**
+   and **Allow npm dist-tag** off; the workflows only need `npm stage publish`. Set up each publisher
+   shortly before its first run so it can be validated within npm's two-day window.
+3. **npm**: once both publishers have worked, set each package's **Publishing access** to require 2FA
    and disallow tokens.

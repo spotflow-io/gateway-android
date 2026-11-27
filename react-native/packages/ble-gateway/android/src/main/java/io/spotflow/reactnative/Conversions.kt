@@ -113,6 +113,7 @@ private fun AttachmentEnd.toMap(): WritableMap = Arguments.createMap().apply {
 private fun DeviceError.toMap(): WritableMap = Arguments.createMap().apply {
     putString("kind", kind.name)
     putString("message", message)
+    gattStatus.let { if (it == null) putNull("gattStatus") else putInt("gattStatus", it) }
 }
 
 internal fun ByteArray.toJsArray(): WritableArray = Arguments.createArray().apply {

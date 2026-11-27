@@ -44,8 +44,7 @@ internal class SpotflowGatewayModule(context: ReactApplicationContext) : NativeS
 
     override fun configure(options: ReadableMap, promise: Promise) {
         try {
-            GatewayHolder.configure(reactApplicationContext, options.toGatewayConfig())
-            promise.resolve(null)
+            promise.resolve(GatewayHolder.configure(reactApplicationContext, options.toGatewayConfig()).toDouble())
         } catch (e: IllegalArgumentException) {
             promise.reject(E_INVALID_OPTIONS, e.message, e)
         } catch (e: RuntimeException) {
@@ -53,8 +52,8 @@ internal class SpotflowGatewayModule(context: ReactApplicationContext) : NativeS
         }
     }
 
-    override fun shutdown() {
-        GatewayHolder.shutdown()
+    override fun shutdown(gatewayId: Double) {
+        GatewayHolder.shutdown(gatewayId.toInt())
     }
 
     override fun openLink(address: String, maxWritePayloadBytes: Double): Double =
@@ -99,9 +98,9 @@ internal class SpotflowGatewayModule(context: ReactApplicationContext) : NativeS
         }
     }
 
-    override fun attach(linkId: Double, attachmentId: Double, promise: Promise) {
-        val gateway = GatewayHolder.current
-            ?: return promise.reject(E_NOT_CONFIGURED, "create the gateway with createGateway() first")
+    override fun attach(gatewayId: Double, linkId: Double, attachmentId: Double, promise: Promise) {
+        val gateway = GatewayHolder.current(gatewayId.toInt())
+            ?: return promise.reject(E_NOT_CONFIGURED, GATEWAY_GONE)
         val link = hub.link(linkId.toInt()) ?: return promise.reject(E_LINK_DOWN, "the link has disconnected")
         val attachment = try {
             gateway.attach(link)
@@ -128,8 +127,9 @@ internal class SpotflowGatewayModule(context: ReactApplicationContext) : NativeS
         attachments[attachmentId.toInt()]?.detach()
     }
 
-    override fun diagnosticsSnapshot(promise: Promise) {
-        promise.resolve(GatewayHolder.current?.diagnosticsSnapshot()?.toMap())
+    override fun diagnosticsSnapshot(gatewayId: Double, promise: Promise) {
+        val gateway = GatewayHolder.current(gatewayId.toInt()) ?: return promise.reject(E_NOT_CONFIGURED, GATEWAY_GONE)
+        promise.resolve(gateway.diagnosticsSnapshot().toMap())
     }
 
     /**
@@ -153,5 +153,7 @@ internal class SpotflowGatewayModule(context: ReactApplicationContext) : NativeS
         private const val E_INVALID_ADDRESS = "E_INVALID_ADDRESS"
         private const val E_LINK_DOWN = "E_LINK_DOWN"
         private const val E_BLE = "E_BLE"
+
+        private const val GATEWAY_GONE = "this gateway has been shut down or replaced: create one with createGateway()"
     }
 }

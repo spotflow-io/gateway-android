@@ -1,6 +1,5 @@
 package io.spotflow.ble
 
-import android.bluetooth.BluetoothGatt
 import io.spotflow.ble.cloud.DeviceIngestCredential
 import io.spotflow.ble.cloud.SpotflowTopics
 import io.spotflow.ble.diagnostics.DeviceDiagnostics
@@ -10,6 +9,7 @@ import io.spotflow.ble.protocol.DeviceCapabilities
 import io.spotflow.ble.protocol.MessageType
 import io.spotflow.ble.transport.BleConnection
 import io.spotflow.ble.transport.ConnectionState
+import io.spotflow.ble.transport.LinkConnection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -181,13 +181,14 @@ internal class GatewaySession(
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            val message = when ((e as? BleLinkException)?.gattStatus) {
-                BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION, BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION,
-                0x0C, 0x89 -> "Pair with the device before reading its ingest key"
-                else -> "Could not read the device ingest key; check that it is provisioned and the BLE link is paired"
+            val status = (e as? BleLinkException)?.gattStatus
+            val message = if (status != null && LinkConnection.needsPairing(status)) {
+                "Pair with the device before reading its ingest key"
+            } else {
+                "Could not read the device ingest key; check that it is provisioned and the BLE link is paired"
             }
             // Don't forward transport messages or causes: a driver might include the raw value.
-            throw DeviceIngestKeyException(message)
+            throw DeviceIngestKeyException(message, status)
         }
         val key = if (value.size in 1..512 && value.all { it in 0x21..0x7e }) {
             value.toString(Charsets.US_ASCII)

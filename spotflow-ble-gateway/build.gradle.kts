@@ -65,7 +65,7 @@ kotlin {
 }
 
 dependencies {
-    // `api`: StateFlow is part of the public API (SpotflowGateway.devices, …).
+    // `api`: StateFlow is part of the public API (Attachment.state, ManagedGateway.scanStatus, …).
     api(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)

@@ -272,7 +272,11 @@ class SpotflowGatewayTest {
         assertEquals(AttachmentEnd.Reason.FAILED, attachment.awaitEnd().reason)
         assertEquals(DeviceError.Kind.AUTH_REJECTED, gateway.state()?.ended?.error?.kind)
         assertEquals(AttachmentState.Ended(attachment.awaitEnd()), gateway.state()?.attachmentState)
-        assertNull(gateway.state()?.cloudError)
+        assertEquals(
+            "background uploads of the backlog are paused for the same reason",
+            DeviceError.Kind.AUTH_REJECTED,
+            gateway.state()?.cloudError?.kind,
+        )
         assertFalse(gateway.state()!!.cloudConnected)
     }
 

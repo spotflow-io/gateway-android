@@ -16,12 +16,32 @@ import {
 import type {
   AttachmentEnd,
   AttachmentState,
+  DeviceError,
   GatewayOptions,
   GatewayReport,
 } from './types.ts';
 
 /** The parts of the TurboModule the bridge uses; tests substitute a fake. */
 export type NativeGateway = Omit<Spec, keyof import('react-native').TurboModule>;
+
+/**
+ * The native module, or a coded error saying why there is none: `E_UNSUPPORTED_PLATFORM` off Android,
+ * `E_NOT_LINKED` on Android when the module is not in the build (installed without rebuilding the app, or
+ * excluded from autolinking). The app decides beforehand whether to use the gateway; this only makes a
+ * mismatch loud.
+ */
+export function requireNative(os: string, native: NativeGateway | null | undefined): NativeGateway {
+  if (os !== 'android') {
+    throw Object.assign(new Error('The Spotflow gateway runs on Android only'), { code: 'E_UNSUPPORTED_PLATFORM' });
+  }
+  if (native == null) {
+    throw Object.assign(
+      new Error('The SpotflowGateway native module is not in this build: rebuild the app after installing the package'),
+      { code: 'E_NOT_LINKED' },
+    );
+  }
+  return native;
+}
 
 /** A device relayed over a link; returned by {@link SpotflowGateway.attach}. */
 export class Attachment {
@@ -77,13 +97,21 @@ export class Attachment {
   }
 }
 
-/** The process's gateway. Create it with `createGateway()`. */
+/**
+ * The process's gateway. Create it with `createGateway()`.
+ *
+ * A handle stands for the gateway it was created for: once that gateway has been shut down, or replaced
+ * by `createGateway()` with other options (also from another React context), the handle's calls reject
+ * and its `shutdown()` does nothing. Calling `createGateway()` again returns a handle to the current one.
+ */
 export class SpotflowGateway {
   private readonly bridge: Bridge;
+  private readonly id: number;
 
   /** @internal */
-  constructor(bridge: Bridge) {
+  constructor(bridge: Bridge, id: number) {
     this.bridge = bridge;
+    this.id = id;
   }
 
   /**
@@ -91,16 +119,24 @@ export class SpotflowGateway {
    * is ready: watch {@link Attachment.state}. Attaching a peripheral that is already relayed replaces
    * that attachment.
    *
-   * Rejects if the link has disconnected, its address is invalid, or the gateway was shut down.
+   * Rejects if the link has disconnected, its address is invalid, or this gateway was shut down or
+   * replaced.
    */
   attach(link: BleLink): Promise<Attachment> {
-    return this.bridge.attach(link);
+    return this.bridge.attach(this.id, link);
   }
 
-  /** Current diagnostics: per-device relay and cloud state, counters, and buffer usage. */
+  /**
+   * Current diagnostics: per-device relay and cloud state, counters, and buffer usage. Rejects if this
+   * gateway was shut down or replaced.
+   */
   async diagnosticsSnapshot(): Promise<GatewayReport> {
-    const report = (await this.bridge.native.diagnosticsSnapshot()) as GatewayReport | null;
-    if (report == null) throw new Error('the Spotflow gateway has been shut down');
+    let report: GatewayReport;
+    try {
+      report = (await this.bridge.native.diagnosticsSnapshot(this.id)) as GatewayReport;
+    } catch (error) {
+      throw asError(error);
+    }
     report.devices.forEach((device) => {
       device.attachmentState = toState(device.attachmentState as NativeStateShape);
     });
@@ -108,11 +144,11 @@ export class SpotflowGateway {
   }
 
   /**
-   * Shuts the gateway down: attachments end as `DETACHED`, and unsent data is kept in the flash buffer
-   * for the next gateway. Returns at once.
+   * Shuts this gateway down: attachments end as `DETACHED`, and unsent data is kept in the flash buffer
+   * for the next gateway. Returns at once. Does nothing if the gateway was shut down or replaced already.
    */
   shutdown(): void {
-    this.bridge.native.shutdown();
+    this.bridge.native.shutdown(this.id);
   }
 }
 
@@ -190,18 +226,17 @@ export class Bridge {
   }
 
   async configure(options: GatewayOptions): Promise<SpotflowGateway> {
-    await this.native.configure(options);
-    return new SpotflowGateway(this);
+    return new SpotflowGateway(this, await this.native.configure(options));
   }
 
-  async attach(link: BleLink): Promise<Attachment> {
+  async attach(gatewayId: number, link: BleLink): Promise<Attachment> {
     const registration = this.register(link);
     const attachmentId = ++this.nextAttachmentId;
     const attachment = new Attachment(link.address, () => this.native.detach(attachmentId));
     // Before the native call: its first state event may arrive before the call resolves.
     this.attachments.set(attachmentId, attachment);
     try {
-      await this.native.attach(registration.linkId, attachmentId);
+      await this.native.attach(gatewayId, registration.linkId, attachmentId);
     } catch (error) {
       this.attachments.delete(attachmentId);
       throw asError(error);
@@ -267,7 +302,10 @@ function toState(event: NativeStateShape): AttachmentState {
     case 'ended': {
       const result = event.result;
       const end: AttachmentEnd = { reason: (result?.reason ?? 'DETACHED') as AttachmentEnd['reason'] };
-      if (result?.error) end.error = result.error as AttachmentEnd['error'];
+      if (result?.error) {
+        const { kind, message, gattStatus } = result.error;
+        end.error = { kind: kind as DeviceError['kind'], message, gattStatus: gattStatus ?? null };
+      }
       return { type: 'ended', result: end };
     }
     default:

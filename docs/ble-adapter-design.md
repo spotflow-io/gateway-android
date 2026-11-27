@@ -47,7 +47,7 @@ One `BleLink` represents one connected, service-discovered link.
 
 ### Call order
 
-The core issues at most one `BleLink` call per link at a time, not counting `awaitDisconnect()`, and waits for each to return or time out before issuing the next. The host's own operations may run between the gateway's calls.
+The core waits for at most one `BleLink` call per link at a time, not counting `awaitDisconnect()`. It does not wait for every call to settle: a call it abandoned on a timeout, or whose session was cancelled, may still be running when it issues the next one — every session ends with a `disableNotifications` issued that way. Calls for one connection also come from several links: a replacement attachment's, and the host's own `GattProfile.readDeviceId(link)`. The host's own operations may run between the gateway's calls.
 
 Adapters run calls in the order the core issues them, also across `BleLink` instances for the same connection, and every call settles: it returns or throws, even after the core has stopped waiting for it. A call the core abandoned on a timeout still runs before the next one; the adapter does not skip, reorder or overlap it, and drops its late result. A library with a per-peripheral operation queue provides this order. The native adapter provides it by keeping its queue held until the abandoned operation's callback arrives or the link drops.
 
@@ -114,7 +114,7 @@ public data class AttachmentEnd internal constructor(val reason: Reason, val err
   - `DETACHED`: the host called `detach()`.
   - `REPLACED`: the same address was attached again.
   - `DISCONNECTED`: `awaitDisconnect()` returned.
-  - `FAILED`: a call failed or timed out, or the device or cloud refused the session. `error` holds the `DeviceError`.
+  - `FAILED`: a call failed or timed out, or the device or cloud refused the session. `error` holds the `DeviceError`: its `kind` (e.g. `PAIRING_REQUIRED` for a device that needs an encrypted link) and the GATT status, where there was one.
 
   Except after `DISCONNECTED`, the host's link is still up. The host decides whether to attach it again.
 - **Attaching the same address again** replaces the previous session. The new session starts after the previous one has attempted its TX Stream disable and released the device's cloud link. The adapter serializes operations so a late disable cannot switch off the new session's notifications.
@@ -125,7 +125,7 @@ public data class AttachmentEnd internal constructor(val reason: Reason, val err
 
 **Native Kotlin**
 
-- `GattBridge` provides a `BleLink` over an Android `BluetoothGatt`. The host runs service discovery and MTU negotiation before attaching and forwards callbacks to the bridge.
+- `GattBridge` provides a `BleLink` over an Android `BluetoothGatt`. The host runs service discovery and MTU negotiation before attaching. Either it registers the bridge's callback with `connectGatt` and passes its own as the bridge's delegate, which then gets every event, or it forwards its callbacks to the bridge.
 - The bridge owns the GATT queue across sessions on that GATT; host operations go through `runExclusive`. An abandoned operation holds the queue until its callback arrives or the link drops. Time spent behind the host's operations counts toward the gateway's operation budget.
 - Native hosts with a GATT queue of their own implement `BleLink` directly.
 
@@ -173,7 +173,7 @@ Both React Native drivers share a thin Android bridge module (a TurboModule) tha
 - **Bridge invalidation.** When the React context is destroyed, for example by a JS reload, every JS-driven attachment ends as if disconnected.
   - The core cannot reach JS to disable notifications at that point, so the device may keep notifying into the void.
   - `react-native-ble-manager` disconnects every peripheral when its module is invalidated, so no link survives a reload; the host reconnects and attaches new links, and the core enables notifications again. A `react-native-ble-plx` driver that reuses a link after a reload disables TX Stream notifications before attaching it again.
-- **Manifest.** The gateway AAR declares the BLE, location and foreground-service permissions and the service of managed mode. The bridge removes them from the host's merged manifest, keeping only `INTERNET` and `ACCESS_NETWORK_STATE`: merged in, they would limit the host's location permission to API 30 and mark its scans as never used for location.
+- **Manifest.** The gateway AAR declares only `INTERNET`, `ACCESS_NETWORK_STATE` and the service of managed mode; hosts of a managed gateway declare the BLE, location and foreground-service permissions themselves. The bridge removes just the service, by its name. It removes no permission: a `tools:node="remove"` cannot be limited to one library, so it would also strip what other libraries declare — `react-native-ble-manager` declares `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT` and location.
 - **Discovery.** Export the Spotflow service UUID from `GattProfile.SERVICE` for the host's existing scanner, and bridge `GattProfile.readDeviceId(link)` for selection before attaching. Do not add another scanner.
   - BLE PLX connections from before a reload are invisible to a new `BleManager`. Hosts call `destroy()` before reloading where they control it.
 - **No logging of values.** TX Stream values include artifact OPEN requests, and RX Stream values include OTA commands; both carry download secrets and credential-bearing URLs. The driver never logs values, and keeps the libraries from logging them as each adapter describes.
@@ -207,8 +207,10 @@ Validate screen-off operation separately.
 Kotlin callers use `SpotflowGateway.usingDeviceIngestKeys(context, options)` or construct `SpotflowGateway(context, credentials, options)` with `StaticIngestKey(ingestKey)` or a `CredentialsProvider`. `GatewayOptions` sets the broker endpoint, the RAM and flash limits, and OTA enablement and artifact size. Create one gateway per process. In JS:
 
 ```ts
+// Only where Platform.OS === 'android'; createGateway() rejects elsewhere (E_UNSUPPORTED_PLATFORM),
+// and with E_NOT_LINKED if the native module is not in the build.
 const gateway = await createGateway(); // or { ingestKeySource: 'gateway', ingestKey }
-const link = bleManagerLink(peripheralId, { mtu });
+const link = bleManagerLink(peripheralId, { mtu }); // peripheralId: the library's ID, on Android the Bluetooth address
 if (allowedDeviceIds.has(await readDeviceId(link))) {
   const attachment = await gateway.attach(link);
   attachment.ended.then((end) => console.log(`relaying stopped: ${end.reason}`));
@@ -217,7 +219,7 @@ if (allowedDeviceIds.has(await readDeviceId(link))) {
 }
 ```
 
-The bridge uses the Android application context and only wraps `ingestKey` in `StaticIngestKey` when the app explicitly sets `ingestKeySource: 'gateway'`. Awaiting `attach` waits for the bridge call, not BLE or MQTT readiness. `detach()` requests the Kotlin `detach()` and returns; `attachment.state` follows the Kotlin `Attachment.state`, and `ended` resolves with its final result.
+The bridge uses the Android application context and only wraps `ingestKey` in `StaticIngestKey` when the app explicitly sets `ingestKeySource: 'gateway'`. A JS gateway handle carries the ID of the native gateway it was created for: once that gateway is shut down or replaced (also from another React context), the handle's calls reject and its `shutdown()` does nothing. Awaiting `attach` waits for the bridge call, not BLE or MQTT readiness. `detach()` requests the Kotlin `detach()` and returns; `attachment.state` follows the Kotlin `Attachment.state`, and `ended` resolves with its final result.
 
 The host owns device selection and calls `attach(link)` for each connection it wants to relay, including after reconnect. The reported device ID is not proof of identity; hosts should protect the link with encryption and restrict pairing. Managed discovery is a separate entry point that requires a `DeviceFilter`.
 

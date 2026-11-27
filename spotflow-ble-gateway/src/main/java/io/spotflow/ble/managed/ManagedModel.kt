@@ -44,12 +44,15 @@ public enum class ScanState {
 }
 
 /** A [ManagedGateway]'s device discovery; see [ManagedGateway.scanStatus]. */
-@ConsistentCopyVisibility
-public data class ScanStatus internal constructor(
-    val state: ScanState,
+public class ScanStatus internal constructor(
+    public val state: ScanState,
     /** Why the scan failed, while [state] is [ScanState.RETRYING] — e.g. a missing permission. */
-    val error: String? = null,
-)
+    public val error: String? = null,
+) {
+    override fun equals(other: Any?): Boolean = other is ScanStatus && other.state == state && other.error == error
+    override fun hashCode(): Int = 31 * state.hashCode() + (error?.hashCode() ?: 0)
+    override fun toString(): String = "ScanStatus(state=$state" + (error?.let { ", error=$it" } ?: "") + ")"
+}
 
 /** The managed layer's logging, through the library's public [SpotflowLog] settings. */
 internal object ManagedLog {

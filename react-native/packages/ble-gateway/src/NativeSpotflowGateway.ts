@@ -28,12 +28,14 @@ export type NativeAttachmentState = {
   attachmentId: number;
   type: string;
   deviceId?: string;
-  result?: { reason: string; error?: { kind: string; message: string } | null };
+  result?: { reason: string; error?: { kind: string; message: string; gattStatus?: number | null } | null };
 };
 
 export interface Spec extends TurboModule {
-  configure(options: NativeGatewayOptions): Promise<void>;
-  shutdown(): void;
+  /** Resolves with the ID of the gateway for `options`, which the other gateway calls take. */
+  configure(options: NativeGatewayOptions): Promise<number>;
+  /** Shuts the gateway with `gatewayId` down, unless another one has replaced it already. */
+  shutdown(gatewayId: number): void;
 
   /** Registers a link the JS driver serves; returns its ID. */
   openLink(address: string, maxWritePayloadBytes: number): number;
@@ -47,9 +49,11 @@ export interface Spec extends TurboModule {
   notificationError(linkId: number, message: string, gattStatus: number): void;
 
   readDeviceId(linkId: number): Promise<string>;
-  attach(linkId: number, attachmentId: number): Promise<void>;
+  /** Rejects if the gateway with `gatewayId` has been shut down or replaced. */
+  attach(gatewayId: number, linkId: number, attachmentId: number): Promise<void>;
   detach(attachmentId: number): void;
-  diagnosticsSnapshot(): Promise<CodegenTypes.UnsafeObject | null>;
+  /** Rejects if the gateway with `gatewayId` has been shut down or replaced. */
+  diagnosticsSnapshot(gatewayId: number): Promise<CodegenTypes.UnsafeObject>;
 
   readonly onLinkRequest: CodegenTypes.EventEmitter<NativeLinkRequest>;
   readonly onAttachmentState: CodegenTypes.EventEmitter<NativeAttachmentState>;

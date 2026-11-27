@@ -1,9 +1,6 @@
 package io.spotflow.ble.managed
 
-import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Context
-import androidx.annotation.RequiresPermission
 import io.spotflow.ble.Attachment
 import io.spotflow.ble.AttachmentEnd
 import io.spotflow.ble.BleLink
@@ -41,7 +38,7 @@ import java.util.concurrent.ConcurrentHashMap
  * A standalone gateway: connects to devices advertising the Spotflow service to read their device IDs.
  * It relays only devices the [deviceFilter] accepts, and reconnects them with backoff.
  *
- * Follow [devices], [status], [bufferUsage] and [scanStatus] for relay and discovery state.
+ * Read [diagnosticsSnapshot] for relay and buffer state, and follow [scanStatus] for discovery.
  *
  * The host may [attach] connections of its own. The scan leaves host attachments alone and may pick
  * up those devices again after the host stops relaying them.
@@ -121,7 +118,6 @@ public class ManagedGateway internal constructor(
         for (key in jobs.keys.toList()) jobs.remove(key)?.cancel()
     }
 
-    @SuppressLint("MissingPermission") // held when scanning was first started
     internal fun handleBluetoothOn() {
         if (wantScanning) {
             ManagedLog.i("Bluetooth on; resuming scanning")
@@ -134,8 +130,16 @@ public class ManagedGateway internal constructor(
     /**
      * Starts discovering and relaying devices. Scanning keeps itself going: a scan that fails is retried
      * with backoff, and it resumes when Bluetooth is turned back on. Follow it in [scanStatus].
+     *
+     * Scanning and connecting need, granted at runtime:
+     * - Android 12 (API 31) and newer: `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`;
+     * - Android 11 (API 30) and older: `ACCESS_FINE_LOCATION`, with the system's Location setting on.
+     *
+     * Not annotated with `@RequiresPermission`: it cannot say that the requirement depends on the Android
+     * version, and the permissions of Android 12 don't exist before it (checking them there always reports
+     * them denied). Returns at once and never throws for a missing permission: discovery then retries, as
+     * [ScanState.RETRYING] with the reason in [ScanStatus.error], until the permission is granted.
      */
-    @RequiresPermission(allOf = [Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT])
     public fun startScanning() {
         check(scope.isActive) { "gateway has been shut down" }
         wantScanning = true

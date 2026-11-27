@@ -1,24 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- BLE, API 31+ -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="s" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-
-    <!-- BLE, up to API 30 -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
-
-    <!-- Foreground service to keep relaying with the screen off -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
+    <!-- Only what the gateway needs in every mode: uploading. The Bluetooth, location, foreground-service
+         and notification permissions depend on how the host uses the library (an app that attaches its own
+         connections already holds what its BLE stack needs; managed mode scans and connects itself, and
+         may run in the service below), so the host declares them: see "Permissions and manifest" in the
+         README. Declared here, they would merge into every host and could only be taken out again with
+         `tools:node="remove"`, which also strips the same declarations of other libraries. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -27,6 +15,8 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application>
+        <!-- Started only by apps that run a ManagedGateway in it, which declare
+             FOREGROUND_SERVICE_CONNECTED_DEVICE themselves. -->
         <service
             android:name="io.spotflow.ble.managed.SpotflowGatewayService"
             android:exported="false"

@@ -46,14 +46,9 @@ fun configureGatewayService(store: IngestKeyStore): Boolean {
         // its own (see DeviceFilter): the BLE protocol does not authenticate devices.
         ManagedGateway(ctx, StaticIngestKey(key), DeviceFilter.AcceptAll, options)
     }
-    SpotflowGatewayService.onReady = { gateway ->
-        try {
-            gateway.startScanning()
-        } catch (e: SecurityException) {
-            // The Bluetooth permissions were revoked since the gateway was started.
-            Log.w("GatewayApp", "cannot scan: ${e.message}")
-        }
-    }
+    // Permissions revoked since the gateway was started don't make this throw: discovery reports them as
+    // ScanState.RETRYING, which the main screen shows.
+    SpotflowGatewayService.onReady = { gateway -> gateway.startScanning() }
     return true
 }
 

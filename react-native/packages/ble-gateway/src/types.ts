@@ -16,9 +16,23 @@ export type GatewayOptions = GatewaySettings & (
   | { ingestKeySource: 'gateway'; ingestKey: string }
 );
 
+/**
+ * Why a device is not (fully) relayed: how an attachment failed, or what keeps its cloud connection from
+ * working. `CLOUD_UNREACHABLE` only appears as a `cloudError`; `PAIRING_REQUIRED` means the device needs an
+ * encrypted link: pair (bond) the phone with it, then attach again.
+ */
 export interface DeviceError {
-  kind: 'AUTH_REJECTED' | 'CLOUD_UNREACHABLE' | 'BLUETOOTH' | 'DUPLICATE_DEVICE' | 'DEVICE_INGEST_KEY';
+  kind:
+    | 'AUTH_REJECTED'
+    | 'CLOUD_UNREACHABLE'
+    | 'BLUETOOTH'
+    | 'PAIRING_REQUIRED'
+    | 'DUPLICATE_DEVICE'
+    | 'DEVICE_INGEST_KEY';
+  /** For logs and display; not meant to be parsed. */
   message: string;
+  /** The GATT status the Bluetooth stack reported for the failed operation, if any. */
+  gattStatus: number | null;
 }
 
 /** How an attachment ended. Except after `DISCONNECTED`, the host's link is still up. */
@@ -61,7 +75,7 @@ export interface DeviceReport {
   pendingMessages: number;
   ramBytes: number;
   flashBytes: number;
-  /** Retryable MQTT connection issue, if any. */
+  /** Why the cloud connection is not working (`CLOUD_UNREACHABLE` or `AUTH_REJECTED`); retried. */
   cloudError: DeviceError | null;
   otaEnabled: boolean;
   activeFirmwareTransfer: FirmwareTransfer | null;

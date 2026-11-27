@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { NativeAttachmentState, NativeLinkRequest } from '../NativeSpotflowGateway.ts';
-import { Bridge, type NativeGateway } from '../bridge.ts';
+import { Bridge, requireNative, type NativeGateway } from '../bridge.ts';
 import { BleLinkError, GattProfile, type BleLink, type GattRef, type NotificationListener } from '../link.ts';
 
 const ADDRESS = 'AA:BB:CC:DD:EE:FF';
+/** The ID of the gateway the tests attach to. */
+const GATEWAY = 7;
 const TX = { service: GattProfile.SERVICE, characteristic: GattProfile.TX_STREAM };
 const subscription = { remove: () => {} } as unknown as ReturnType<NativeGateway['onLinkRequest']>;
 
@@ -16,10 +18,15 @@ class FakeNative {
   private requestHandler: ((request: NativeLinkRequest) => void) | undefined;
   private stateHandler: ((event: NativeAttachmentState) => void) | undefined;
   private nextLinkId = 0;
+  private nextGatewayId = 0;
+  readonly attachedTo: number[] = [];
 
   readonly module = {
-    configure: async (options: unknown) => void this.calls.push(['configure', options]),
-    shutdown: () => void this.calls.push(['shutdown']),
+    configure: async (options: unknown) => {
+      this.calls.push(['configure', options]);
+      return ++this.nextGatewayId;
+    },
+    shutdown: (gatewayId: number) => void this.calls.push(['shutdown', gatewayId]),
     openLink: (address: string, bytes: number) => {
       this.calls.push(['openLink', address, bytes]);
       return ++this.nextLinkId;
@@ -38,14 +45,17 @@ class FakeNative {
       this.calls.push(['readDeviceId', linkId]);
       return this.readDeviceIdResult;
     },
-    attach: async (linkId: number, attachmentId: number) => {
+    attach: async (gatewayId: number, linkId: number, attachmentId: number) => {
       this.calls.push(['attach', linkId, attachmentId]);
+      this.attachedTo.push(gatewayId);
       // The module may emit the first state before the call resolves.
       this.state({ attachmentId, type: 'starting' });
       if (this.attachFailure) throw this.attachFailure;
     },
     detach: (attachmentId: number) => void this.calls.push(['detach', attachmentId]),
-    diagnosticsSnapshot: async (): Promise<object | null> => null,
+    diagnosticsSnapshot: async (_gatewayId: number): Promise<object> => {
+      throw Object.assign(new Error('this gateway has been shut down or replaced'), { code: 'E_NOT_CONFIGURED' });
+    },
     onLinkRequest: (handler: (request: NativeLinkRequest) => void) => {
       this.requestHandler = handler;
       return subscription;
@@ -123,6 +133,15 @@ function setUp() {
   return { native, bridge: new Bridge(native.module) };
 }
 
+describe('requireNative', () => {
+  it('says why the gateway cannot run, with a code the app can test', () => {
+    const native = new FakeNative().module;
+    assert.equal(requireNative('android', native), native);
+    assert.throws(() => requireNative('ios', native), { code: 'E_UNSUPPORTED_PLATFORM' });
+    assert.throws(() => requireNative('android', null), { code: 'E_NOT_LINKED', message: /rebuild the app/ });
+  });
+});
+
 describe('Bridge', () => {
   it('passes default device mode and explicit gateway mode to native', async () => {
     const { native, bridge } = setUp();
@@ -132,10 +151,24 @@ describe('Bridge', () => {
     assert.deepEqual(native.last(), ['configure', { ingestKeySource: 'gateway', ingestKey: 'test-key' }]);
   });
 
+  it('acts on the gateway a handle was created for, not on one that replaced it', async () => {
+    const { native, bridge } = setUp();
+    const first = await bridge.configure({});
+    const second = await bridge.configure({ ingestKeySource: 'gateway', ingestKey: 'test-key' });
+
+    await first.attach(new FakeLink());
+    await second.attach(new FakeLink());
+    assert.deepEqual(native.attachedTo, [1, 2]);
+
+    first.shutdown();
+    assert.deepEqual(native.last(), ['shutdown', 1]);
+    await assert.rejects(first.diagnosticsSnapshot(), /shut down or replaced/);
+  });
+
   it('forwards an ingest key read without propagating driver error text', async () => {
     const { native, bridge } = setUp();
     const link = new FakeLink();
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
     const ref = { service: GattProfile.SERVICE, characteristic: GattProfile.INGEST_KEY };
     link.result = Promise.resolve([33, 126]);
     native.request({ linkId: 1, requestId: 1, op: 'read', ...ref });
@@ -151,8 +184,8 @@ describe('Bridge', () => {
     const { native, bridge } = setUp();
     const link = new FakeLink();
     await bridge.readDeviceId(link);
-    await bridge.attach(link);
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
+    await bridge.attach(GATEWAY, link);
     assert.deepEqual(
       native.calls.filter((c) => c[0] === 'openLink' || c[0] === 'attach' || c[0] === 'readDeviceId'),
       [['openLink', ADDRESS, 20], ['readDeviceId', 1], ['attach', 1, 1], ['attach', 1, 2]],
@@ -162,7 +195,7 @@ describe('Bridge', () => {
   it('performs requests on the link and settles them by ID', async () => {
     const { native, bridge } = setUp();
     const link = new FakeLink();
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
 
     link.result = Promise.resolve(new Uint8Array([7, 8]));
     native.request({ linkId: 1, requestId: 1, op: 'read', ...{ service: GattProfile.SERVICE, characteristic: GattProfile.DEVICE_ID } });
@@ -189,13 +222,13 @@ describe('Bridge', () => {
   it('numbers notification values per link, across attachments', async () => {
     const { native, bridge } = setUp();
     const link = new FakeLink();
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
     native.request({ linkId: 1, requestId: 1, op: 'enableNotifications', ...TX });
     await settle();
     link.listener?.onValue([1]);
     link.listener?.onValue(new Uint8Array([2]));
     native.request({ linkId: 1, requestId: 2, op: 'disableNotifications', ...TX });
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
     native.request({ linkId: 1, requestId: 3, op: 'enableNotifications', ...TX });
     await settle();
     link.listener?.onValue([3]);
@@ -209,14 +242,14 @@ describe('Bridge', () => {
   it('reports a disconnect, then registers the next link afresh', async () => {
     const { native, bridge } = setUp();
     const link = new FakeLink();
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
     link.drop();
     assert.deepEqual(native.last(), ['disconnected', 1]);
     native.request({ linkId: 1, requestId: 9, op: 'read', ...TX });
     assert.deepEqual(native.last(), ['reject', 1, 9, 'the link has disconnected', -1]);
 
     const reconnected = new FakeLink();
-    await bridge.attach(reconnected);
+    await bridge.attach(GATEWAY, reconnected);
     assert.deepEqual(native.calls.find((c) => c[0] === 'openLink' && c !== native.calls[0]), ['openLink', ADDRESS, 20]);
   });
 
@@ -224,14 +257,14 @@ describe('Bridge', () => {
     const { native, bridge } = setUp();
     const link = new FakeLink();
     link.down = true;
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
     assert.deepEqual(native.calls.slice(0, 2), [['openLink', ADDRESS, 20], ['disconnected', 1]]);
   });
 
   it('forwards MTU changes until the link drops', async () => {
     const { native, bridge } = setUp();
     const link = new FakeLink();
-    await bridge.attach(link);
+    await bridge.attach(GATEWAY, link);
     link.setMtu(244);
     link.drop();
     link.setMtu(100);
@@ -240,7 +273,7 @@ describe('Bridge', () => {
 
   it('follows the attachment lifecycle and resolves ended once', async () => {
     const { native, bridge } = setUp();
-    const attachment = await bridge.attach(new FakeLink());
+    const attachment = await bridge.attach(GATEWAY, new FakeLink());
     const seen: string[] = [];
     attachment.onStateChange((state) => seen.push(state.type));
     assert.deepEqual(attachment.state, { type: 'starting' });
@@ -252,7 +285,7 @@ describe('Bridge', () => {
     assert.deepEqual(native.last(), ['detach', 1]);
     native.state({ attachmentId: 1, type: 'ended', result: { reason: 'FAILED', error: { kind: 'BLUETOOTH', message: 'boom' } } });
     native.state({ attachmentId: 1, type: 'ready', deviceId: 'late' });
-    assert.deepEqual(await attachment.ended, { reason: 'FAILED', error: { kind: 'BLUETOOTH', message: 'boom' } });
+    assert.deepEqual(await attachment.ended, { reason: 'FAILED', error: { kind: 'BLUETOOTH', message: 'boom', gattStatus: null } });
     assert.deepEqual(seen, ['ready', 'ended']);
     assert.equal(attachment.state.type, 'ended');
 
@@ -282,7 +315,7 @@ describe('Bridge', () => {
   it('rejects attach when the module refuses it', async () => {
     const { native, bridge } = setUp();
     native.attachFailure = Object.assign(new Error('the link has disconnected'), { code: 'E_LINK_DOWN' });
-    await assert.rejects(bridge.attach(new FakeLink()), /the link has disconnected/);
+    await assert.rejects(bridge.attach(GATEWAY, new FakeLink()), /the link has disconnected/);
   });
 
   it('surfaces the GATT status of a failed device ID read', async () => {

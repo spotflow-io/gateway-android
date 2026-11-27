@@ -17,12 +17,15 @@ import java.util.UUID
  * transfer) and the cloud side; through this interface it only issues raw GATT operations.
  *
  * ## Contract
- * - **Call order.** The gateway issues at most one call per link at a time (not counting
- *   [awaitDisconnect]) and waits for each to return or time out before issuing the next. The adapter
- *   serializes GATT operations per live connection, including host operations and replacement
- *   attachments. Operations run in issue order and settle. If the caller stops waiting or is cancelled,
- *   an operation already submitted to the stack must settle or the link must drop before the adapter
- *   releases the queue.
+ * - **Call order.** The gateway waits for at most one call per link at a time (not counting
+ *   [awaitDisconnect]), but it does not wait for every call to settle before issuing the next: a call it
+ *   stopped waiting for — it timed out, or its session was cancelled — may still be running when the next
+ *   one arrives (e.g. the [disableNotifications] that ends every session). Calls for the same connection
+ *   can also come from several links: a replacement attachment's, or the host's own
+ *   [GattProfile.readDeviceId][io.spotflow.ble.protocol.GattProfile.readDeviceId]. So the adapter queues GATT
+ *   operations per live connection, together with the host's own: they run one at a time, in the order
+ *   they were issued, and every one settles. An operation already submitted to the stack holds the queue
+ *   until it settles or the link drops, also when its caller stopped waiting or was cancelled.
  * - **Failures** are reported as [BleLinkException], with the GATT status where there is one.
  * - **Ready when attached.** Attach a link once its connection is up, its services are discovered and
  *   any MTU exchange has finished: the gateway only uses the operations exposed here.
@@ -115,7 +118,8 @@ public class Attachment internal constructor(
     /**
      * Stops relaying this attachment — not a newer one for the same address — and turns the device's TX
      * Stream notifications off if possible. Returns at once; use [awaitEnd] for the outcome. The host
-     * owns the link, and data already buffered is still uploaded.
+     * owns the link, and data already buffered is still uploaded. The device leaves
+     * [SpotflowGateway.diagnosticsSnapshot] until it is attached again.
      */
     public fun detach() {
         detacher(this)
@@ -137,17 +141,30 @@ public sealed interface AttachmentState {
     public data object Starting : AttachmentState
 
     /** The gateway can receive and buffer messages. MQTT may still be disconnected. */
-    @ConsistentCopyVisibility
-    public data class Ready internal constructor(val deviceId: String) : AttachmentState
+    public class Ready internal constructor(public val deviceId: String) : AttachmentState {
+        override fun equals(other: Any?): Boolean = other is Ready && other.deviceId == deviceId
+        override fun hashCode(): Int = deviceId.hashCode()
+        override fun toString(): String = "Ready(deviceId=$deviceId)"
+    }
 
     /** This attachment is finished. Buffered uploads may still continue. */
-    @ConsistentCopyVisibility
-    public data class Ended internal constructor(val result: AttachmentEnd) : AttachmentState
+    public class Ended internal constructor(public val result: AttachmentEnd) : AttachmentState {
+        override fun equals(other: Any?): Boolean = other is Ended && other.result == result
+        override fun hashCode(): Int = result.hashCode()
+        override fun toString(): String = "Ended(result=$result)"
+    }
 }
 
 /** How an [Attachment] ended. */
-@ConsistentCopyVisibility
-public data class AttachmentEnd internal constructor(val reason: Reason, val error: DeviceError? = null) {
+public class AttachmentEnd internal constructor(
+    public val reason: Reason,
+    /** Why it failed, with [Reason.FAILED]; null otherwise. */
+    public val error: DeviceError? = null,
+) {
+    override fun equals(other: Any?): Boolean = other is AttachmentEnd && other.reason == reason && other.error == error
+    override fun hashCode(): Int = 31 * reason.hashCode() + (error?.hashCode() ?: 0)
+    override fun toString(): String = "AttachmentEnd(reason=$reason" + (error?.let { ", error=$it" } ?: "") + ")"
+
     public enum class Reason {
         /** The host called [Attachment.detach] or shut the gateway down. */
         DETACHED,
